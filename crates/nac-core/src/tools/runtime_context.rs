@@ -36,6 +36,9 @@ pub struct ToolRuntime {
     /// service attaches. Workers and the existing orchestrator retain their
     /// established allow-through behavior.
     pub permission_broker: Option<Arc<crate::permissions::PermissionBroker>>,
+    /// Session-scoped Claude built-in tool approval channel. The selected
+    /// execution backend is fixed before a request reaches this broker.
+    pub claude_approval_broker: Option<Arc<crate::claude_approval::ClaudeApprovalBroker>>,
     /// Direct-only bridge for exact mid-run durable-goal baselines.
     pub(crate) goal_runtime: Option<Arc<crate::goals::GoalRuntime>>,
     /// Optional process-environment capability, read immediately before each

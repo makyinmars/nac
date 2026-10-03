@@ -352,6 +352,12 @@ impl SessionService {
         };
         let mut metadata = self.metadata();
         metadata.extra_headers.clear();
+        let claude_agent = self
+            .session_snapshot
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|snapshot| snapshot.claude_agent.clone());
         let transcript_warning = self
             .transcript_recovery_warning
             .lock()
@@ -359,6 +365,7 @@ impl SessionService {
         let transcript_recovery_warning = transcript_warning.as_deref().map(str::to_owned);
         let snapshot = SessionFrontendSnapshot {
             metadata,
+            claude_agent,
             messages: loaded_messages.messages,
             message_created_at: loaded_messages.created_at,
             transcript_recovery_warning,

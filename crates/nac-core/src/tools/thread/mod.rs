@@ -2,11 +2,14 @@ use serde_json::Value;
 
 use crate::events::AgentEvent;
 use crate::model::{DispatchWeight, ModelClient};
+use crate::sandbox::ExecutionBackend;
+use crate::sessions;
 use crate::skills::SkillRegistry;
 use crate::store;
 use crate::tools::{require_str, require_string_array, ToolResult, ToolRuntime};
 use crate::types::{ToolDefinition, TOOL_CALL_CANCELLED_MARKER};
 
+pub(crate) mod claude_worker;
 mod worker;
 #[cfg(test)]
 pub(crate) use worker::worker_model_arguments_for_test;
@@ -47,6 +50,11 @@ pub fn dispatch_definition(
         "properties": {
             "name": { "type": "string", "description": "Thread name. Creates if new, reuses if existing." },
             "action": { "type": "string", "description": "Task for the worker." },
+            "agent": {
+                "type": "string",
+                "enum": ["nac", "claude"],
+                "description": "Worker agent. Defaults to nac; an existing thread keeps its original agent."
+            },
             "threads": {
                 "type": "array",
                 "items": { "type": "string" },
@@ -62,11 +70,12 @@ pub fn dispatch_definition(
             "type": "string",
             "enum": ["light", "heavy"],
             "description": format!(
-                "Weight class for this dispatch. light runs the configured light model — {} — for mechanical or well-scoped work; heavy runs your own model for work needing real reasoning or broad context.",
+                "Required when agent is nac. light runs the configured light model — {} — for mechanical or well-scoped work; heavy runs your own model for work needing real reasoning or broad context. Omit for Claude workers.",
                 describe_light_model(light)
             )
         });
-        parameters["required"] = json!(["name", "action", "weight"]);
+        // Claude workers have no NAC model weight. The parser still requires
+        // weight for NAC dispatches when a light model is configured.
     }
 
     if let Some(registry) = skills {
@@ -141,6 +150,12 @@ pub fn thread_delete_definition() -> ToolDefinition {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchAgent {
+    Nac,
+    Claude,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedDispatchParams {
     pub thread_name: String,
@@ -150,6 +165,7 @@ pub struct ParsedDispatchParams {
     pub scheduled_skills: Vec<String>,
     pub session_id: String,
     pub timeout_secs: u64,
+    pub agent: DispatchAgent,
     /// Weight class when a light model is configured; `None` otherwise.
     pub weight: Option<DispatchWeight>,
 }
@@ -165,7 +181,18 @@ pub fn parse_dispatch_args(
     let scheduled_skills = resolve_scheduled_skills(args, runtime.skills.as_deref())?;
     let session_id = require_session(runtime)?.to_string();
     let timeout_secs = resolve_thread_timeout_secs(args, runtime.thread_timeout_secs);
-    let weight = if runtime.light_client.is_some() {
+    let agent = match args.get("agent") {
+        None => DispatchAgent::Nac,
+        Some(Value::String(agent)) if agent == "nac" => DispatchAgent::Nac,
+        Some(Value::String(agent)) if agent == "claude" => DispatchAgent::Claude,
+        _ => {
+            return Err(ToolResult {
+                content: "Error: 'agent' must be 'nac' or 'claude'.".into(),
+                is_error: true,
+            });
+        }
+    };
+    let weight = if matches!(agent, DispatchAgent::Nac) && runtime.light_client.is_some() {
         Some(
             require_str(args, "weight")?
                 .parse::<DispatchWeight>()
@@ -186,6 +213,7 @@ pub fn parse_dispatch_args(
         scheduled_skills,
         session_id,
         timeout_secs,
+        agent,
         weight,
     })
 }
@@ -212,6 +240,72 @@ pub(crate) fn select_dispatch_client(
     }
 }
 
+async fn prepare_thread_agent(
+    runtime: &ToolRuntime,
+    session_id: &str,
+    thread_name: &str,
+    agent: DispatchAgent,
+) -> anyhow::Result<Option<store::ClaudeThreadBinding>> {
+    let binding = match agent {
+        DispatchAgent::Nac => None,
+        DispatchAgent::Claude => {
+            let snapshot =
+                sessions::load_session_async(runtime.store_path.clone(), session_id.to_string())
+                    .await?;
+            anyhow::ensure!(
+                snapshot.claude_worker_trusted_workspace,
+                "Claude worker execution requires this session's trusted-workspace setting"
+            );
+            anyhow::ensure!(
+                snapshot.cwd == runtime.workspace_cwd,
+                "Claude worker workspace differs from the parent session's pinned workspace"
+            );
+            anyhow::ensure!(
+                snapshot.ssh.as_ref() == runtime.backend.ssh_connection(),
+                "Claude worker execution host differs from the parent session's pinned host"
+            );
+            anyhow::ensure!(
+                !matches!(runtime.backend.as_ref(), ExecutionBackend::Sandbox(_)),
+                "Claude workers are unavailable in Podman workspaces"
+            );
+            Some(store::ClaudeThreadBinding {
+                host_id: snapshot.ssh.as_ref().map(|ssh| ssh.host.clone()),
+                ssh_port: snapshot.ssh.as_ref().and_then(|ssh| ssh.port),
+                ssh_identity_file: snapshot
+                    .ssh
+                    .as_ref()
+                    .and_then(|ssh| ssh.identity_file.as_ref())
+                    .map(|path| path.to_string_lossy().into_owned()),
+                workspace: snapshot.cwd,
+                config_dir: None,
+                native_session_id: None,
+            })
+        }
+    };
+    let store_path = runtime.store_path.clone();
+    let session_id = session_id.to_string();
+    let thread_name = thread_name.to_string();
+    let stored_binding = binding.clone();
+    tokio::task::spawn_blocking(move || {
+        store::ensure_thread_agent(
+            &store_path,
+            &session_id,
+            &thread_name,
+            match agent {
+                DispatchAgent::Nac => store::ThreadAgent::Nac,
+                DispatchAgent::Claude => store::ThreadAgent::Claude,
+            },
+            stored_binding.as_ref(),
+        )?;
+        if agent == DispatchAgent::Claude {
+            store::load_thread_claude_binding(&store_path, &session_id, &thread_name)
+        } else {
+            Ok(None)
+        }
+    })
+    .await?
+}
+
 /// Execute a dispatch from already-parsed params.  Emits `ThreadStarted`,
 /// calls `run_worker`, folds worker usage, and maps the `WorkerRun` to a
 /// `ToolResult`. The caller registers the dispatch before this function;
@@ -229,6 +323,7 @@ pub async fn execute_parsed_dispatch(
         scheduled_skills,
         session_id,
         timeout_secs,
+        agent,
         weight: _,
     } = params;
     let Some(cancellation) = runtime.active_threads.start(&thread_name, &dispatch_id) else {
@@ -240,6 +335,18 @@ pub async fn execute_parsed_dispatch(
             .into(),
             is_error: true,
         };
+    };
+
+    let claude_binding = match prepare_thread_agent(runtime, &session_id, &thread_name, agent).await
+    {
+        Ok(binding) => binding,
+        Err(error) => {
+            close_thread_dispatch(runtime, &session_id, &thread_name, &dispatch_id);
+            return ToolResult {
+                content: format!("Thread '{thread_name}' could not start: {error}").into(),
+                is_error: true,
+            };
+        }
     };
 
     runtime.event_sink.emit(AgentEvent::ThreadStarted {
@@ -254,35 +361,56 @@ pub async fn execute_parsed_dispatch(
     // on top of the episode it just wrote.
     let handoff_watermark = read_handoff_watermark(runtime, &session_id, &thread_name).await;
 
-    let result = run_worker(
-        runtime,
-        client,
-        WorkerInvocation {
-            session_id: &session_id,
-            thread_name: &thread_name,
-            dispatch_id: &dispatch_id,
-            action: &action,
-            source_threads: &source_threads,
-            scheduled_skills: &scheduled_skills,
-            timeout_secs,
-        },
-        cancellation,
-    )
-    .await;
+    let invocation = WorkerInvocation {
+        session_id: &session_id,
+        thread_name: &thread_name,
+        dispatch_id: &dispatch_id,
+        action: &action,
+        source_threads: &source_threads,
+        scheduled_skills: &scheduled_skills,
+        timeout_secs,
+    };
+    let result = match agent {
+        DispatchAgent::Nac => run_worker(runtime, client, invocation, cancellation).await,
+        DispatchAgent::Claude => {
+            let Some(binding) = claude_binding else {
+                close_thread_dispatch(runtime, &session_id, &thread_name, &dispatch_id);
+                return ToolResult {
+                    content: format!(
+                        "Claude thread '{thread_name}' is missing its durable binding"
+                    )
+                    .into(),
+                    is_error: true,
+                };
+            };
+            claude_worker::run(runtime, invocation, cancellation, binding).await
+        }
+    };
 
     let run = match result {
         Ok(run) => run,
         Err(error) => {
             let message = format!("Failed to spawn thread '{thread_name}': {error}");
-            record_dispatch_failure(
+            if !handed_off(
                 runtime,
                 &session_id,
                 &thread_name,
-                &action,
-                store::EpisodeStatus::Error,
-                &message,
+                &dispatch_id,
+                agent,
+                handoff_watermark,
             )
-            .await;
+            .await
+            {
+                record_dispatch_failure(
+                    runtime,
+                    &session_id,
+                    &thread_name,
+                    &action,
+                    store::EpisodeStatus::Error,
+                    &message,
+                )
+                .await;
+            }
             close_thread_dispatch(runtime, &session_id, &thread_name, &dispatch_id);
             runtime.event_sink.emit(AgentEvent::Error {
                 thread_name: Some(thread_name.clone()),
@@ -304,7 +432,16 @@ pub async fn execute_parsed_dispatch(
 
     let failure = classify_dispatch_failure(&run, &thread_name, timeout_secs);
     if let Some(failure) = &failure {
-        if !handed_off(runtime, &session_id, &thread_name, handoff_watermark).await {
+        if !handed_off(
+            runtime,
+            &session_id,
+            &thread_name,
+            &dispatch_id,
+            agent,
+            handoff_watermark,
+        )
+        .await
+        {
             record_dispatch_failure(
                 runtime,
                 &session_id,
@@ -443,16 +580,27 @@ async fn handed_off(
     runtime: &ToolRuntime,
     session_id: &str,
     thread_name: &str,
+    dispatch_id: &str,
+    agent: DispatchAgent,
     watermark: Option<i64>,
 ) -> bool {
-    let Some(watermark) = watermark else {
-        return false;
-    };
     let store_path = runtime.store_path.clone();
     let session_id = session_id.to_string();
     let thread = thread_name.to_string();
-    tokio::task::spawn_blocking(move || {
-        store::has_retained_episode_after(&store_path, &session_id, &thread, watermark)
+    let dispatch_id = dispatch_id.to_string();
+    tokio::task::spawn_blocking(move || match agent {
+        DispatchAgent::Nac => store::has_retained_episode_after(
+            &store_path,
+            &session_id,
+            &thread,
+            watermark.unwrap_or(0),
+        ),
+        DispatchAgent::Claude => {
+            Ok(
+                store::load_episode_for_dispatch(&store_path, &session_id, &dispatch_id)?
+                    .is_some_and(|episode| episode.thread_name == thread),
+            )
+        }
     })
     .await
     .is_ok_and(|retained| retained.unwrap_or(false))
@@ -586,8 +734,12 @@ pub async fn execute_threads(runtime: &ToolRuntime) -> ToolResult {
     let mut output = String::from("Active threads:");
     for thread in threads {
         output.push_str(&format!(
-            "\n- {} | {} episodes | created {} | updated {}",
-            thread.name, thread.episode_count, thread.created_at, thread.updated_at
+            "\n- {} | agent {} | {} episodes | created {} | updated {}",
+            thread.name,
+            thread.agent.as_str(),
+            thread.episode_count,
+            thread.created_at,
+            thread.updated_at
         ));
         if let Some(action) = thread.latest_action.as_deref() {
             output.push_str(&format!(" | last action: {action}"));
@@ -863,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_definition_requires_weight_only_with_a_light_model() {
+    fn dispatch_definition_offers_claude_without_requiring_nac_weight() {
         let light = test_client("gpt-5-mini", crate::model::ReasoningEffort::Low);
 
         let single = dispatch_definition(None, None);
@@ -876,6 +1028,10 @@ mod tests {
         );
 
         let dual = dispatch_definition(None, Some(&light));
+        assert_eq!(
+            dual.function.parameters["properties"]["agent"]["enum"],
+            json!(["nac", "claude"])
+        );
         let weight = &dual.function.parameters["properties"]["weight"];
         assert_eq!(weight["enum"], json!(["light", "heavy"]));
         assert!(weight["description"]
@@ -884,7 +1040,7 @@ mod tests {
             .contains("gpt-5-mini"));
         assert_eq!(
             dual.function.parameters["required"],
-            json!(["name", "action", "weight"])
+            json!(["name", "action"])
         );
     }
 
@@ -925,6 +1081,141 @@ mod tests {
                 expected_model
             );
         }
+    }
+
+    #[test]
+    fn claude_dispatch_does_not_inherit_nac_weight() {
+        let mut runtime = test_runtime();
+        runtime.light_client = Some(Arc::new(test_client(
+            "gpt-5-mini",
+            crate::model::ReasoningEffort::Low,
+        )));
+        let claude = parse_dispatch_args(
+            &json!({ "name": "worker", "action": "run tests", "agent": "claude" }),
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(claude.agent, DispatchAgent::Claude);
+        assert_eq!(claude.weight, None);
+        let nac = parse_dispatch_args(
+            &json!({ "name": "worker", "action": "run tests", "weight": "heavy" }),
+            &runtime,
+        )
+        .unwrap();
+        assert_eq!(nac.agent, DispatchAgent::Nac);
+        let invalid = parse_dispatch_args(
+            &json!({ "name": "worker", "action": "run tests", "agent": "unknown" }),
+            &runtime,
+        )
+        .unwrap_err();
+        assert!(invalid.is_error);
+    }
+
+    #[tokio::test]
+    async fn claude_worker_requires_user_trust_and_named_thread_agent_is_immutable() {
+        let root = std::env::temp_dir().join(format!(
+            "nac_claude_thread_identity_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime();
+        runtime.store_path = root.join("store.db");
+        store::initialize(&runtime.store_path).unwrap();
+        let snapshot = sessions::new_snapshot(
+            "test-session".to_string(),
+            runtime.workspace_cwd.clone(),
+            "test-model".to_string(),
+            "https://api.openai.com/v1".to_string(),
+            crate::model::BackendKind::OpenAiResponses,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            std::collections::BTreeMap::new(),
+        );
+        sessions::create_session(&runtime.store_path, &snapshot).unwrap();
+
+        let untrusted =
+            prepare_thread_agent(&runtime, "test-session", "claude", DispatchAgent::Claude)
+                .await
+                .unwrap_err();
+        assert!(untrusted.to_string().contains("trusted-workspace"));
+        assert!(store::list_threads(&runtime.store_path, "test-session")
+            .unwrap()
+            .is_empty());
+
+        sessions::trust_claude_worker_workspace(&runtime.store_path, "test-session").unwrap();
+        let binding =
+            prepare_thread_agent(&runtime, "test-session", "claude", DispatchAgent::Claude)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(binding.workspace, runtime.workspace_cwd);
+        assert!(binding.native_session_id.is_none());
+        let wrong_agent =
+            prepare_thread_agent(&runtime, "test-session", "claude", DispatchAgent::Nac)
+                .await
+                .unwrap_err();
+        assert!(wrong_agent.to_string().contains("already bound"));
+        prepare_thread_agent(&runtime, "test-session", "nac", DispatchAgent::Nac)
+            .await
+            .unwrap();
+        let wrong_agent =
+            prepare_thread_agent(&runtime, "test-session", "nac", DispatchAgent::Claude)
+                .await
+                .unwrap_err();
+        assert!(wrong_agent.to_string().contains("already bound"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn claude_worker_binding_preserves_ssh_host_and_rejects_target_switch() {
+        let root =
+            std::env::temp_dir().join(format!("nac_claude_thread_ssh_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut runtime = test_runtime();
+        runtime.store_path = root.join("store.db");
+        runtime.workspace_cwd = std::path::PathBuf::from("/remote/project");
+        runtime.backend = Arc::new(ExecutionBackend::Ssh(crate::sandbox::SshBackend::new(
+            "user@build-host".to_string(),
+            runtime.workspace_cwd.clone(),
+        )));
+        store::initialize(&runtime.store_path).unwrap();
+        let ssh = crate::sandbox::SshConnection::new("user@build-host");
+        let snapshot = sessions::new_snapshot(
+            "test-session".to_string(),
+            runtime.workspace_cwd.clone(),
+            "test-model".to_string(),
+            "https://api.openai.com/v1".to_string(),
+            crate::model::BackendKind::OpenAiResponses,
+            None,
+            None,
+            Some(ssh),
+            Vec::new(),
+            None,
+            std::collections::BTreeMap::new(),
+        );
+        sessions::create_session(&runtime.store_path, &snapshot).unwrap();
+        sessions::trust_claude_worker_workspace(&runtime.store_path, "test-session").unwrap();
+        let binding = prepare_thread_agent(&runtime, "test-session", "impl", DispatchAgent::Claude)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(binding.host_id.as_deref(), Some("user@build-host"));
+        assert_eq!(
+            binding.workspace,
+            std::path::PathBuf::from("/remote/project")
+        );
+        runtime.backend = Arc::new(ExecutionBackend::Local {
+            workspace_cwd: runtime.workspace_cwd.clone(),
+        });
+        let mismatch =
+            prepare_thread_agent(&runtime, "test-session", "impl", DispatchAgent::Claude)
+                .await
+                .unwrap_err();
+        assert!(mismatch.to_string().contains("execution host differs"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1008,6 +1299,22 @@ mod tests {
         let mut runtime = test_runtime();
         runtime.workspace_cwd = root.clone();
         runtime.config_cwd = root.clone();
+        runtime.store_path = root.join("store.db");
+        store::initialize(&runtime.store_path).unwrap();
+        let snapshot = sessions::new_snapshot(
+            "test-session".to_string(),
+            root.clone(),
+            "test-model".to_string(),
+            "https://api.openai.com/v1".to_string(),
+            crate::model::BackendKind::OpenAiResponses,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            std::collections::BTreeMap::new(),
+        );
+        sessions::create_session(&runtime.store_path, &snapshot).unwrap();
         runtime.worker_executable = Some(executable);
         let params = ParsedDispatchParams {
             thread_name: "worker".to_string(),
@@ -1017,6 +1324,7 @@ mod tests {
             scheduled_skills: Vec::new(),
             session_id: "test-session".to_string(),
             timeout_secs: 30,
+            agent: DispatchAgent::Nac,
             weight: None,
         };
         assert!(mark_thread_active(&runtime, "worker", "dispatch"));

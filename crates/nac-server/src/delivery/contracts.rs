@@ -48,6 +48,32 @@ pub struct LaunchModelDefaultsRequest {
     pub ssh_identity_file: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ClaudeStatusQuery {
+    pub ssh_host: Option<String>,
+    pub ssh_port: Option<u16>,
+    pub ssh_identity_file: Option<String>,
+    pub claude_executable: Option<String>,
+    /// Absolute CLAUDE_CONFIG_DIR on the selected execution host.
+    pub claude_config_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct ClaudeStatusResponse {
+    pub available: bool,
+    pub authenticated: bool,
+    pub version: Option<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+pub struct ReplyClaudePermissionRequest {
+    pub run_id: String,
+    pub generation: u64,
+    pub reply: nac_core::claude_approval::ClaudePermissionReply,
+}
+
 /// Where to look on an SSH host, for the remote half of the path picker.
 ///
 /// The connection is described in the request rather than taken from a session,
@@ -242,6 +268,18 @@ pub struct CreateSessionRequest {
     /// orchestrator default.
     #[serde(default)]
     pub behavior: sessions::SessionBehavior,
+    /// Immutable owner of the model loop. Existing requests default to NAC.
+    #[serde(default)]
+    pub agent_runtime: sessions::AgentRuntime,
+    /// Claude executable on the selected local or SSH host.
+    pub claude_executable: Option<String>,
+    /// Optional Claude Code model selector; independent of NAC's model settings.
+    pub claude_model: Option<String>,
+    /// Optional absolute CLAUDE_CONFIG_DIR on the execution host.
+    pub claude_config_dir: Option<String>,
+    /// Confirms the selected workspace is trusted to load Claude hooks and MCP servers.
+    #[serde(default)]
+    pub claude_trusted_workspace: bool,
     /// Marks the required first chat for an empty project. The server
     /// serializes this admission and returns the already-created primary chat
     /// to concurrent callers instead of creating a duplicate. Ordinary New
@@ -321,6 +359,11 @@ impl CreateSessionRequest {
     pub(crate) fn into_application(self) -> application::session_creation::SessionCreationCommand {
         application::session_creation::SessionCreationCommand {
             behavior: self.behavior,
+            agent_runtime: self.agent_runtime,
+            claude_executable: self.claude_executable,
+            claude_model: self.claude_model,
+            claude_config_dir: self.claude_config_dir,
+            claude_trusted_workspace: self.claude_trusted_workspace,
             first_chat: self.first_chat,
             project_id: self.project_id,
             cwd: self.cwd,

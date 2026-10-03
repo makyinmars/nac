@@ -38,10 +38,22 @@ impl<'a> DelegationApplication<'a> {
         Self { manager }
     }
 
+    fn require_nac_runtime(&self, parent_session_id: &str) -> Result<()> {
+        if sessions::load_session(&self.manager.inner.store_path, parent_session_id)?.agent_runtime
+            != sessions::AgentRuntime::Nac
+        {
+            return Err(anyhow!(
+                "invalid request: NAC child and orchestrator controls are unavailable for Claude Agent sessions"
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn list_traditional_children(
         &self,
         parent_session_id: &str,
     ) -> Result<Vec<TraditionalChildRecord>> {
+        self.require_nac_runtime(parent_session_id)?;
         let service = self.manager.attach_session(parent_session_id).await?;
         if service.metadata().behavior == sessions::SessionBehavior::Orchestrator {
             return Err(anyhow!(
@@ -69,6 +81,7 @@ impl<'a> DelegationApplication<'a> {
         parent_session_id: &str,
         command: StartTraditionalChild,
     ) -> Result<TraditionalChildRecord> {
+        self.require_nac_runtime(parent_session_id)?;
         self.manager.attach_session(parent_session_id).await?;
         let controller =
             nac_core::traditional_children::controller_for(&self.manager.inner.store_path)?;
@@ -125,6 +138,7 @@ impl<'a> DelegationApplication<'a> {
         &self,
         parent_session_id: &str,
     ) -> Result<Vec<ManagedOrchestratorRecord>> {
+        self.require_nac_runtime(parent_session_id)?;
         let service = self.manager.attach_session(parent_session_id).await?;
         if service.metadata().behavior != sessions::SessionBehavior::DirectWithOrchestrator {
             return Err(anyhow!(
@@ -142,6 +156,7 @@ impl<'a> DelegationApplication<'a> {
         parent_session_id: &str,
         command: StartManagedOrchestrator,
     ) -> Result<ManagedOrchestratorRecord> {
+        self.require_nac_runtime(parent_session_id)?;
         self.manager.attach_session(parent_session_id).await?;
         let controller =
             nac_core::orchestration_control::controller_for(&self.manager.inner.store_path)?;

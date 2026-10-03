@@ -14,6 +14,7 @@ const PROVIDER_LABELS = {
   "together-chat": "Together Chat",
   "arcee-auth": "Arcee API (Sign in)",
   "arcee-api": "Arcee API (Key)",
+  "claude-agent": "Claude Agent",
 } satisfies Record<BackendKind, string>;
 
 /** Display order shared by every provider list in the UI. */
@@ -115,5 +116,6 @@ export function providersFromBackends(backends: Iterable<string>): string[] {
   const unknown = Array.from(seen)
     .filter((kind) => !isBackendKind(kind))
     .sort();
+  if (seen.has("claude-agent")) known.push("claude-agent");
   return [...known, ...unknown];
 }

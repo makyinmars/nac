@@ -160,6 +160,7 @@ impl WorkerTimeoutTrace {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct WorkerInvocation<'a> {
     pub(super) session_id: &'a str,
     pub(super) thread_name: &'a str,
@@ -1694,6 +1695,7 @@ exit 0
         trace.observe(&AgentEvent::ToolCallStarted {
             thread_name: Some("impl/auth".to_string()),
             call_id: "call_123".to_string(),
+            parent_call_id: None,
             name: "exec_command".to_string(),
             args_preview: "cargo test -p nac-core".to_string(),
             key_arg_preview: None,

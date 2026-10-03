@@ -1662,6 +1662,11 @@ async fn server_arcee_configuration_status_and_persistence_are_consistent() {
     let create_error = manager
         .create_session(CreateSessionRequest {
             behavior: sessions::SessionBehavior::Orchestrator,
+            agent_runtime: sessions::AgentRuntime::Nac,
+            claude_executable: None,
+            claude_model: None,
+            claude_config_dir: None,
+            claude_trusted_workspace: false,
             first_chat: false,
             project_id: None,
             cwd: None,
@@ -1791,6 +1796,11 @@ async fn server_arcee_configuration_status_and_persistence_are_consistent() {
     let created = manager
         .create_session(CreateSessionRequest {
             behavior: sessions::SessionBehavior::Orchestrator,
+            agent_runtime: sessions::AgentRuntime::Nac,
+            claude_executable: None,
+            claude_model: None,
+            claude_config_dir: None,
+            claude_trusted_workspace: false,
             first_chat: false,
             project_id: None,
             cwd: None,

@@ -24,6 +24,7 @@ const EXPECTED_OPENAPI_OPERATIONS: &[(&str, &str)] = &[
     ("DELETE", "/ssh-configs/{config_id}"),
     ("GET", "/auth"),
     ("GET", "/auth/{provider}/login/{login_id}"),
+    ("GET", "/claude/status"),
     ("GET", "/commands"),
     ("GET", "/credentials"),
     ("GET", "/fs/browse"),
@@ -52,6 +53,7 @@ const EXPECTED_OPENAPI_OPERATIONS: &[(&str, &str)] = &[
     ("GET", "/sessions/{session_id}"),
     ("GET", "/sessions/{session_id}/children"),
     ("GET", "/sessions/{session_id}/children/{child_session_id}"),
+    ("GET", "/sessions/{session_id}/claude-permissions"),
     ("GET", "/sessions/{session_id}/config"),
     ("GET", "/sessions/{session_id}/skills"),
     ("GET", "/sessions/{session_id}/events"),
@@ -101,6 +103,11 @@ const EXPECTED_OPENAPI_OPERATIONS: &[(&str, &str)] = &[
     ("POST", "/sessions/{session_id}/cancel-active-run"),
     ("POST", "/sessions/{session_id}/compact"),
     ("POST", "/sessions/{session_id}/children"),
+    ("POST", "/sessions/{session_id}/claude-worker-trust"),
+    (
+        "POST",
+        "/sessions/{session_id}/claude-permissions/{request_id}/reply",
+    ),
     (
         "POST",
         "/sessions/{session_id}/children/{child_session_id}/cancel",
@@ -238,6 +245,16 @@ async fn openapi_document_matches_the_running_api_router() {
     assert!(
         document["components"]["schemas"]["CreateSessionRequest"]["properties"]
             .get("project_id")
+            .is_some()
+    );
+    assert!(
+        document["components"]["schemas"]["CreateSessionRequest"]["properties"]
+            .get("agent_runtime")
+            .is_some()
+    );
+    assert!(
+        document["components"]["schemas"]["SessionSummarySnapshot"]["properties"]
+            .get("agent_runtime")
             .is_some()
     );
     assert!(

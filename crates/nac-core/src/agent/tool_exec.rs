@@ -248,6 +248,7 @@ async fn execute_with_dag_error(
         event_sink.emit(AgentEvent::ToolCallStarted {
             thread_name: thread_name.clone(),
             call_id: dispatch.tool_call_id.clone(),
+            parent_call_id: None,
             name: "thread".to_string(),
             args_preview: preview_tool_args("thread", &dispatch.args_str),
             key_arg_preview: None,

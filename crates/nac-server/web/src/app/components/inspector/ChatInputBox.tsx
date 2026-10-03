@@ -18,6 +18,7 @@ import {
 } from "@/app/atoms";
 import { ModelPicker } from "@/app/components/inspector/ModelPicker";
 import { PermissionControls } from "@/app/components/inspector/PermissionControls";
+import { ClaudePermissionControls } from "@/app/components/inspector/ClaudePermissionControls";
 import { GoalControls } from "@/app/components/inspector/GoalControls";
 import { ChildControls } from "@/app/components/inspector/ChildControls";
 import { OrchestratorControls } from "@/app/components/inspector/OrchestratorControls";
@@ -293,12 +294,15 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
   const updateInboxItem = useUpdateInboxItem();
   const cancelInboxItem = useCancelInboxItem();
   const behavior = entry?.summary.behavior ?? snapshot?.metadata.behavior ?? null;
+  const claudeAgent =
+    entry?.summary.agent_runtime === "claude-agent" ||
+    snapshot?.metadata.agent_runtime === "claude-agent";
   const direct = behavior === "direct" || behavior === "direct-with-orchestrator";
   const lineage = entry?.lineage ?? snapshot?.lineage ?? null;
   const readOnly = lineage != null;
   const ownershipKnown = entry !== null || snapshot !== null;
   const inboxQuery = useSessionInbox(sessionId, direct && !readOnly);
-  const goalQuery = useSessionGoal(sessionId, direct && !readOnly);
+  const goalQuery = useSessionGoal(sessionId, direct && !readOnly && !claudeAgent);
   const createGoal = useCreateGoal();
   const updateGoal = useUpdateGoal();
   const clearGoal = useClearGoal();
@@ -431,14 +435,14 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
 
   const commandQuery = useMemo(() => slashCommandQuery(value), [value]);
   const filteredCommands = useMemo(() => {
-    if (!commandQuery || !commandDefinitions) return [];
+    if (claudeAgent || !commandQuery || !commandDefinitions) return [];
     const prefix = commandQuery.prefix.toLocaleLowerCase();
     return commandDefinitions.filter(
       (definition) =>
         (definition.name !== "goal" || direct) &&
         definition.name.toLocaleLowerCase().startsWith(prefix),
     );
-  }, [commandDefinitions, commandQuery, direct]);
+  }, [claudeAgent, commandDefinitions, commandQuery, direct]);
   const skillQuery = useMemo(
     () => skillReferenceQuery(value, selection.start, selection.end, skillDefinitions ?? []),
     [selection, skillDefinitions, value],
@@ -686,6 +690,10 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
       submitInFlight.current = true;
 
       try {
+        if (claudeAgent && /^\/(?:compact|goal)(?:\s|$)/i.test(prompt)) {
+          toast.error("NAC slash commands are unavailable in Claude Agent chats.");
+          return;
+        }
         let definitions = commandDefinitions;
         if (text.trimStart().startsWith("/") && definitions === undefined) {
           const result = await refetchCommands();
@@ -697,6 +705,10 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
         }
 
         const command = definitions ? submittedSlashCommand(text, definitions) : null;
+        if (claudeAgent && (command?.command === "compact" || command?.command === "goal")) {
+          toast.error("NAC slash commands are unavailable in Claude Agent chats.");
+          return;
+        }
         if (command?.command === "compact") {
           try {
             await compactSession.mutateAsync(sessionId);
@@ -746,6 +758,7 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
       backend,
       busy,
       commandDefinitions,
+      claudeAgent,
       refetchCommands,
       sessionId,
       submitRun,
@@ -1261,14 +1274,27 @@ export function ChatInputBox({ sessionId, snapshot, entry }: ChatInputBoxProps) 
           {/* A phone's settings glyph lives in the pill instead. */}
           {isMobile ? null : settingsButton}
 
-          <PermissionControls sessionId={sessionId} behavior={behavior} />
-          <GoalControls sessionId={sessionId} behavior={behavior} openRequest={goalOpenRequest} />
-          <ChildControls sessionId={sessionId} behavior={behavior} />
-          <OrchestratorControls sessionId={sessionId} behavior={behavior} />
+          {claudeAgent ? (
+            <ClaudePermissionControls sessionId={sessionId} />
+          ) : (
+            <>
+              <PermissionControls sessionId={sessionId} behavior={behavior} />
+              {behavior === "orchestrator" ? (
+                <ClaudePermissionControls sessionId={sessionId} />
+              ) : null}
+              <GoalControls
+                sessionId={sessionId}
+                behavior={behavior}
+                openRequest={goalOpenRequest}
+              />
+              <ChildControls sessionId={sessionId} behavior={behavior} />
+              <OrchestratorControls sessionId={sessionId} behavior={behavior} />
+            </>
+          )}
 
           {/* The model name is the first thing a narrow column gives up; the
               same switch lives in the session settings the gear opens. */}
-          {narrow ? null : (
+          {narrow || claudeAgent ? null : (
             <ModelPicker
               sessionId={sessionId}
               metadata={snapshot?.metadata ?? null}

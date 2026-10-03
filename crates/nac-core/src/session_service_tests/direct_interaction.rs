@@ -788,7 +788,7 @@ async fn mid_run_goal_creation_does_not_wait_for_the_agent_loop_mutex() {
     );
     let service = parts.service;
     let active = service.try_begin_run(None, "ordinary user work").unwrap();
-    let _agent_loop = service.agent.lock().await;
+    let _agent_loop = service.nac_agent().unwrap().lock().await;
 
     let goal = tokio::time::timeout(
         Duration::from_millis(100),
@@ -1512,7 +1512,7 @@ async fn frontend_snapshot_coverage_is_immediate_from_the_store_transcript() {
     // log (ack + append at the steering commit point), coverage hides
     // the record — no run-end persist, and a held agent lock (a busy
     // run) is irrelevant because coverage reads the store.
-    let agent_guard = service.agent.lock().await;
+    let agent_guard = service.nac_agent().unwrap().lock().await;
     seed_log_tail(
         &parts,
         vec![Message::User {

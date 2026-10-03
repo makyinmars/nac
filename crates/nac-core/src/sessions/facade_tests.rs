@@ -39,6 +39,57 @@ fn expected_versions(entries: &[(&str, i64)]) -> BTreeMap<String, i64> {
 }
 
 #[test]
+fn claude_session_pins_runtime_binding_and_native_id() {
+    let path = temp_store_path("claude_identity");
+    let mut snapshot = test_snapshot("claude", "now", "now");
+    snapshot.behavior = SessionBehavior::Direct;
+    snapshot.agent_runtime = AgentRuntime::ClaudeAgent;
+    snapshot.backend = BackendKind::ClaudeAgent;
+    snapshot.claude_agent = Some(ClaudeAgentSession {
+        executable: "claude".into(),
+        model: Some("sonnet".into()),
+        config_dir: Some("/home/user/.claude".into()),
+        trusted_workspace: true,
+        native_session_id: None,
+    });
+    create_session(&path, &snapshot).unwrap();
+    save_claude_native_session_id(&path, "claude", "native-1").unwrap();
+    assert_eq!(
+        load_session(&path, "claude")
+            .unwrap()
+            .claude_agent
+            .unwrap()
+            .native_session_id
+            .as_deref(),
+        Some("native-1")
+    );
+    assert!(save_claude_native_session_id(&path, "claude", "native-2").is_err());
+    snapshot.cwd = PathBuf::from("/different");
+    assert!(save_session(&path, &snapshot).is_err());
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn claude_creation_rejects_incompatible_behavior_and_backend() {
+    let path = temp_store_path("claude_validation");
+    let mut snapshot = test_snapshot("claude", "now", "now");
+    snapshot.agent_runtime = AgentRuntime::ClaudeAgent;
+    snapshot.claude_agent = Some(ClaudeAgentSession {
+        executable: "claude".into(),
+        model: None,
+        config_dir: None,
+        trusted_workspace: true,
+        native_session_id: None,
+    });
+    assert!(create_session(&path, &snapshot).is_err());
+    snapshot.behavior = SessionBehavior::Direct;
+    assert!(create_session(&path, &snapshot).is_err());
+    snapshot.backend = BackendKind::ClaudeAgent;
+    create_session(&path, &snapshot).unwrap();
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
 fn create_and_load_session_round_trip() {
     let _guard = TEST_ENV_LOCK.lock().unwrap();
     let store_path = temp_store_path("round_trip");

@@ -167,6 +167,8 @@ pub enum AgentEvent {
     ToolCallStarted {
         thread_name: Option<String>,
         call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_call_id: Option<String>,
         name: String,
         args_preview: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,6 +179,8 @@ pub enum AgentEvent {
     ToolCallFinished {
         thread_name: Option<String>,
         call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_call_id: Option<String>,
         name: String,
         content_preview: String,
         is_error: bool,
@@ -386,6 +390,7 @@ impl AgentEvent {
         Self::ToolCallFinished {
             thread_name,
             call_id,
+            parent_call_id: None,
             name: name.clone(),
             content_preview: crate::agent::preview::preview_tool_result(&name, result),
             is_error: result.is_error,
@@ -538,6 +543,19 @@ pub enum SessionEvent {
     /// The waiting call ended without a user reply (for example cancellation
     /// or timeout), so clients must remove the no-longer-actionable prompt.
     PermissionDismissed {
+        request_id: String,
+        reason: String,
+    },
+    /// A Claude Code built-in tool request. This is separate from prepared NAC
+    /// tool authorization and cannot create remembered native-tool grants.
+    ClaudePermissionAsked {
+        request: crate::claude_approval::ClaudePermissionRequest,
+    },
+    ClaudePermissionReplied {
+        request_id: String,
+        reply: crate::claude_approval::ClaudePermissionReply,
+    },
+    ClaudePermissionDismissed {
         request_id: String,
         reason: String,
     },
@@ -1064,6 +1082,7 @@ pub(crate) fn sanitize_external_agent_event(event: AgentEvent) -> Option<AgentEv
         AgentEvent::ToolCallStarted {
             thread_name,
             call_id,
+            parent_call_id,
             name,
             args_preview,
             key_arg_preview: existing_key,
@@ -1082,6 +1101,7 @@ pub(crate) fn sanitize_external_agent_event(event: AgentEvent) -> Option<AgentEv
             AgentEvent::ToolCallStarted {
                 thread_name,
                 call_id,
+                parent_call_id: parent_call_id.map(|id| bounded_tool_preview(&id)),
                 args_preview: safe_args,
                 key_arg_preview: Some(key),
                 args_detail: None,
@@ -1091,6 +1111,7 @@ pub(crate) fn sanitize_external_agent_event(event: AgentEvent) -> Option<AgentEv
         AgentEvent::ToolCallFinished {
             thread_name,
             call_id,
+            parent_call_id,
             name,
             content_preview,
             is_error,
@@ -1104,6 +1125,7 @@ pub(crate) fn sanitize_external_agent_event(event: AgentEvent) -> Option<AgentEv
         } => AgentEvent::ToolCallFinished {
             thread_name,
             call_id,
+            parent_call_id: parent_call_id.map(|id| bounded_tool_preview(&id)),
             name: safe_tool_name(&name),
             content_preview: bounded_tool_preview(&redact_credentials(&content_preview, &[])),
             is_error,

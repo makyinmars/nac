@@ -8,6 +8,11 @@ import {
   type LaunchModelSelection,
 } from "@/app/components/modals/ConfigurationsPanel";
 import { LightModelSection, type LightSelection } from "@/app/components/modals/LightModelSection";
+import { AgentRuntimePicker, type AgentRuntime } from "@/app/components/modals/AgentRuntimePicker";
+import {
+  ClaudeLaunchSettings,
+  type ClaudeLaunchSelection,
+} from "@/app/components/modals/ClaudeLaunchSettings";
 import { PrimaryModelSection } from "@/app/components/modals/PrimaryModelSection";
 import { SessionBehaviorPicker } from "@/app/components/modals/SessionBehaviorPicker";
 import { useExitTransition } from "@/app/hooks/useExitTransition";
@@ -35,6 +40,7 @@ import type {
   ModelConfigurationRecord,
   RawSessionConfig,
   SessionBehavior,
+  SshTarget,
 } from "@/app/types/api";
 
 interface InheritedModelSelection {
@@ -121,12 +127,26 @@ function NewChatForm({
   const sessions = useSessions();
   const modelConfigs = useModelConfigs();
   const [behavior, setBehavior] = useState<SessionBehavior>("orchestrator");
+  const [runtime, setRuntime] = useState<AgentRuntime>("nac");
+  const [claude, setClaude] = useState<ClaudeLaunchSelection>({
+    executable: "claude",
+    model: "",
+    configDir: "",
+    trustedWorkspace: false,
+  });
   const [selection, setSelection] = useState<LaunchModelSelection | null>(null);
   const [light, setLight] = useState<LightSelection>({ mode: "single", light: null });
   const [error, setError] = useState("");
   const [advanced, setAdvanced] = useState(false);
 
   const project = projects.data?.projects.find((entry) => entry.project_id === projectId) ?? null;
+  const claudeHost: SshTarget | null = project?.ssh_host
+    ? {
+        ssh_host: project.ssh_host,
+        ssh_port: project.ssh_port,
+        ssh_identity_file: project.ssh_identity_file,
+      }
+    : null;
   const sibling = newestCreatedPrimarySessionForProject(sessions.data ?? [], projectId);
   const defaultConfig = project?.default_model_config_id
     ? (modelConfigs.data?.configurations.find(
@@ -170,12 +190,16 @@ function NewChatForm({
   const selectedLightKey = JSON.stringify(selectedLight);
 
   const submit = async () => {
-    if (busy || inheritancePending) return;
-    if (!selection) {
+    if (busy || (runtime === "nac" && inheritancePending)) return;
+    if (runtime === "claude-agent" && !claude.trustedWorkspace) {
+      setError("Confirm that you trust this workspace before starting Claude Code.");
+      return;
+    }
+    if (runtime === "nac" && !selection) {
       setError("Choose the primary model before creating this chat.");
       return;
     }
-    if (light.mode === "dual" && !light.light) {
+    if (runtime === "nac" && light.mode === "dual" && !light.light) {
       setError("Pick the light model before creating this chat.");
       return;
     }
@@ -197,6 +221,25 @@ function NewChatForm({
           return;
         }
       }
+
+      if (runtime === "claude-agent") {
+        const request: CreateSessionRequest = {
+          project_id: projectId,
+          behavior: "direct" as const,
+          first_chat: firstChat,
+          agent_runtime: runtime,
+          claude_executable: claude.executable.trim() || "claude",
+          claude_model: claude.model.trim() || null,
+          claude_config_dir: claude.configDir.trim() || null,
+          claude_trusted_workspace: true,
+        };
+        const snapshot = await createSession.mutateAsync(request);
+        onClose();
+        if (snapshot.metadata.session_id) navigate(routes.session(snapshot.metadata.session_id));
+        return;
+      }
+
+      if (!selection) return;
 
       let selected: {
         backend: BackendKind;
@@ -267,20 +310,43 @@ function NewChatForm({
       flush
       className="h-[700px]"
       title="New Chat"
-      subheader="Choose this chat's behavior and models. These settings apply to this chat without changing the project default."
+      subheader="Choose the runtime for this chat. Its settings do not change the project default."
       footer={
         <Button
           variant={ButtonVariant.Primary}
           loading={busy}
-          disabled={busy || inheritancePending || !selection}
+          disabled={
+            busy ||
+            (runtime === "nac" && (inheritancePending || !selection)) ||
+            (runtime === "claude-agent" && (!project || !claude.trustedWorkspace))
+          }
           onClick={() => void submit()}
         >
           Create chat
         </Button>
       }
     >
-      <SessionBehaviorPicker value={behavior} onChange={setBehavior} disabled={busy} />
-      {inheritancePending ? (
+      <AgentRuntimePicker
+        value={runtime}
+        onChange={(next) => {
+          setRuntime(next);
+          if (next === "claude-agent") setBehavior("direct");
+          setError("");
+        }}
+        disabled={busy}
+      />
+      {runtime === "nac" ? (
+        <SessionBehaviorPicker value={behavior} onChange={setBehavior} disabled={busy} />
+      ) : (
+        <p className="text-micro text-basic-secondary">Claude Agent uses direct chat behavior.</p>
+      )}
+      {runtime === "claude-agent" && !project ? (
+        <p role="status" className="text-micro text-basic-muted">
+          Loading the project host…
+        </p>
+      ) : runtime === "claude-agent" ? (
+        <ClaudeLaunchSettings value={claude} onChange={setClaude} host={claudeHost} />
+      ) : inheritancePending ? (
         <div className="flex items-center gap-2 py-6 text-micro text-basic-muted" role="status">
           <Loader size={LoaderSize.Micro} />
           Loading the project's model settings…

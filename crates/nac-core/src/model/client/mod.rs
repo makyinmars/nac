@@ -117,6 +117,11 @@ pub fn validate_model_configuration(
     api_key_env: Option<&str>,
     extra_headers: &std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
+    if backend == BackendKind::ClaudeAgent {
+        return Err(model_configuration_error(
+            "invalid model configuration: 'claude-agent' is a separate agent runtime, not a model backend",
+        ));
+    }
     // Mirror `EffectiveModelSettings::from_optional`: an absent selector
     // auto-selects the provider's conventional credential variable when
     // set, so validation matches what session resolution will do.
@@ -166,6 +171,9 @@ pub fn validate_model_configuration(
         | BackendKind::OpenAiChatCompletions
         | BackendKind::AnthropicMessages => {
             api_key_for_backend(backend, api_key_env)?;
+        }
+        BackendKind::ClaudeAgent => {
+            unreachable!("Claude Agent is rejected before model validation")
         }
     }
     Ok(())
@@ -244,6 +252,11 @@ impl ModelClient {
     pub fn from_effective_settings(settings: EffectiveModelSettings) -> Result<Self> {
         validate_extra_headers(&settings.extra_headers)?;
         let backend = settings.backend;
+        if backend == BackendKind::ClaudeAgent {
+            return Err(model_configuration_error(
+                "invalid model configuration: 'claude-agent' is a separate agent runtime, not a model backend",
+            ));
+        }
         // ArceeApi validates through `resolve_arcee_api_credentials` below
         // (its base-url check must fire first); every other backend
         // validates its api_key_env selector here.

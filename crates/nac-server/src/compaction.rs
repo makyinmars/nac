@@ -32,6 +32,7 @@ pub enum CompactSessionResponse {
 pub enum CompactSessionError {
     NotFound,
     Busy,
+    Unsupported,
     Failed,
 }
 
@@ -40,6 +41,7 @@ impl std::fmt::Display for CompactSessionError {
         formatter.write_str(match self {
             Self::NotFound => "session not found",
             Self::Busy => "session is busy",
+            Self::Unsupported => "NAC compaction is unavailable for Claude Agent sessions",
             Self::Failed => "compaction failed",
         })
     }
@@ -52,6 +54,7 @@ impl IntoResponse for CompactSessionError {
         let status = match self {
             Self::NotFound => axum::http::StatusCode::NOT_FOUND,
             Self::Busy => axum::http::StatusCode::CONFLICT,
+            Self::Unsupported => axum::http::StatusCode::BAD_REQUEST,
             Self::Failed => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         };
         (
@@ -83,6 +86,13 @@ impl SessionManager {
             .is_some()
         {
             return Err(CompactSessionError::NotFound);
+        }
+        if sessions::load_session(&self.inner.store_path, session_id)
+            .map_err(|error| report_failure(session_id, "load session runtime", &error))?
+            .agent_runtime
+            == sessions::AgentRuntime::ClaudeAgent
+        {
+            return Err(CompactSessionError::Unsupported);
         }
 
         let handle = {
@@ -180,7 +190,7 @@ fn report_failure(
     operation_id = "post_sessions_session_id_compact",
     tag = "conversation",
     params(("session_id" = String, Path)),
-    responses((status = 200, description = "Success", body = CompactSessionResponse, content_type = "application/json"), (status = 400, description = "Path extraction failed", body = String, content_type = "text/plain"), (status = 404, description = "Request failed", body = crate::ApiErrorBody, content_type = "application/json"), (status = 409, description = "Request failed", body = crate::ApiErrorBody, content_type = "application/json"), (status = 500, description = "Request failed", body = crate::ApiErrorBody, content_type = "application/json"))
+    responses((status = 200, description = "Success", body = CompactSessionResponse, content_type = "application/json"), (status = 400, description = "Unsupported runtime or path extraction failed", content((crate::ApiErrorBody = "application/json"), (String = "text/plain"))), (status = 404, description = "Request failed", body = crate::ApiErrorBody, content_type = "application/json"), (status = 409, description = "Request failed", body = crate::ApiErrorBody, content_type = "application/json"), (status = 500, description = "Request failed", body = crate::ApiErrorBody, content_type = "application/json"))
 )]
 pub(crate) async fn handler(
     State(manager): State<SessionManager>,

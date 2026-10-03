@@ -676,7 +676,10 @@ test("asks for immutable behavior on every first and new chat", async ({
   const projectId = await createProject(request, harness);
   await page.goto(`${harness.baseUrl}/#/project/${projectId}`);
 
-  const behaviorChoices = page.getByRole("radio");
+  const behaviorChoices = page
+    .locator("fieldset")
+    .filter({ hasText: "How should this chat work?" })
+    .getByRole("radio");
   await expect(page.getByRole("dialog")).toContainText("New Chat");
   await expect(behaviorChoices).toHaveCount(3);
   await expect(behaviorChoices.filter({ hasText: "NAC orchestrator" }).first()).toHaveAttribute(
@@ -1541,7 +1544,7 @@ test("shows live background delegated work, terminal events, cancellation, and g
     harness.provider.enqueue(
       id,
       { token, afterStep },
-      { kind: "text", text: `${id} acknowledged` },
+      { kind: "text", text: `${id} acknowledged`, stream: true },
     );
   }
   harness.provider.enqueue(
@@ -1553,10 +1556,14 @@ test("shows live background delegated work, terminal events, cancellation, and g
   harness.provider.enqueue(
     "observe-generation-2",
     { token: "Background success", afterStep: "background-generation-2" },
-    { kind: "text", text: "generation 2 acknowledged" },
+    { kind: "text", text: "generation 2 acknowledged", stream: true },
   );
 
   const parentId = await createSession(request, harness, "direct");
+  let providerDiscoveryRequests = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/providers/models") providerDiscoveryRequests += 1;
+  });
   await page.goto(`${harness.baseUrl}/#/session/${parentId}/delegated`);
   const launch = async (description: string, prompt: string) => {
     const response = await request.post(`${harness.baseUrl}/sessions/${parentId}/children`, {
@@ -1576,6 +1583,9 @@ test("shows live background delegated work, terminal events, cancellation, and g
   const failureRow = page.locator("article").filter({ hasText: "Background failure" });
   await expect(successRow).toContainText("Running");
   await expect(cancelRow).toContainText("Running");
+  // The closed composer picker uses the local catalog. Eager provider indexes
+  // can occupy every remaining HTTP/1.1 socket beside child event streams.
+  expect(providerDiscoveryRequests).toBe(0);
   await expect(successRow.getByRole("button", { name: "Steer" })).toBeVisible();
   await cancelRow.getByRole("button", { name: "Cancel" }).click();
   await expect(cancelRow).toContainText("Cancelled");
@@ -1587,9 +1597,11 @@ test("shows live background delegated work, terminal events, cancellation, and g
   await expect(page.getByLabel("Coding agent completed")).toContainText("Background success");
   await expect(page.getByLabel("Coding agent failed")).toContainText("Background failure");
   await expect(page.getByLabel("Coding agent cancelled")).toContainText("Background cancellation");
-  await expect(page.getByRole("button", { name: "Resend" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Revert to this snapshot" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Create fork" })).toHaveCount(0);
+  for (const row of [successRow, cancelRow, failureRow]) {
+    await expect(row.getByRole("button", { name: "Resend" })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: "Revert to this snapshot" })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: "Create fork" })).toHaveCount(0);
+  }
 
   await successRow.getByRole("button", { name: "Continue" }).click();
   await page.getByRole("textbox", { name: "Continuation prompt" }).fill("E2E_GENERATION_TWO");
@@ -1601,6 +1613,7 @@ test("shows live background delegated work, terminal events, cancellation, and g
   await expect(successRow).toContainText("Completed");
   await expect(page.getByLabel("Coding agent completed").last()).toContainText("Generation 2");
   await expect(page.getByRole("button", { name: "Open exact transcript" }).last()).toBeVisible();
+  expect(providerDiscoveryRequests).toBe(0);
   expect(successChild.child_session_id).toBeTruthy();
   harness.provider.assertConsumed();
 });

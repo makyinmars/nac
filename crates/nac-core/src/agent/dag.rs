@@ -230,6 +230,7 @@ pub(crate) fn collect_parse_errors(
         event_sink.emit(AgentEvent::ToolCallStarted {
             thread_name: thread_name.clone(),
             call_id: tool_call_id.clone(),
+            parent_call_id: None,
             name: "thread".to_string(),
             args_preview: preview_tool_args("thread", &args_str),
             key_arg_preview: None,
@@ -275,6 +276,7 @@ pub(crate) fn spawn_non_thread_into(
         event_sink.emit(AgentEvent::ToolCallStarted {
             thread_name: thread_name.clone(),
             call_id: tool_call_id.clone(),
+            parent_call_id: None,
             name: tool_name.clone(),
             args_preview: preview_tool_args(&tool_name, &args_str),
             key_arg_preview: None,
@@ -391,6 +393,7 @@ pub(crate) async fn execute_with_dag(
             event_sink.emit(AgentEvent::ToolCallStarted {
                 thread_name: agent_thread_name.clone(),
                 call_id: dispatch.tool_call_id.clone(),
+                parent_call_id: None,
                 name: "thread".to_string(),
                 args_preview: preview_tool_args("thread", &dispatch.args_str),
                 key_arg_preview: None,
@@ -477,6 +480,7 @@ pub(crate) async fn execute_with_dag(
                 event_sink.emit(AgentEvent::ToolCallStarted {
                     thread_name: agent_thread_name.clone(),
                     call_id: dispatch.tool_call_id.clone(),
+                    parent_call_id: None,
                     name: "thread".to_string(),
                     args_preview: preview_tool_args("thread", &dispatch.args_str),
                     key_arg_preview: None,
@@ -504,6 +508,7 @@ pub(crate) async fn execute_with_dag(
             event_sink.emit(AgentEvent::ToolCallStarted {
                 thread_name: agent_thread_name.clone(),
                 call_id: dispatch.tool_call_id.clone(),
+                parent_call_id: None,
                 name: "thread".to_string(),
                 args_preview: preview_tool_args("thread", &dispatch.args_str),
                 key_arg_preview: None,
@@ -703,6 +708,7 @@ mod tests {
                 scheduled_skills: Vec::new(),
                 session_id: "test-session".to_string(),
                 timeout_secs: DEFAULT_THREAD_TIMEOUT_SECS,
+                agent: thread::DispatchAgent::Nac,
                 weight: None,
             },
         }

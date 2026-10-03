@@ -11,6 +11,8 @@ import type {
   BrowseListing,
   CommitOutcome,
   CommitWorkspaceRequest,
+  ClaudePermissionRequest,
+  ClaudeStatusResponse,
   CompactSessionResponse,
   CreateModelConfigurationRequest,
   CreateGoalRequest,
@@ -230,6 +232,45 @@ export const api = {
 
   getStore: (signal?: AbortSignal) => request<StoreInfo>("GET", "/store", { signal }),
 
+  getClaudeStatus: (
+    host: SshTarget | null,
+    executable: string,
+    configDir: string,
+    signal?: AbortSignal,
+  ) => {
+    const params = new URLSearchParams();
+    params.set("claude_executable", executable.trim() || "claude");
+    if (configDir.trim()) params.set("claude_config_dir", configDir.trim());
+    if (host) {
+      params.set("ssh_host", host.ssh_host);
+      if (host.ssh_port != null) params.set("ssh_port", String(host.ssh_port));
+      if (host.ssh_identity_file) params.set("ssh_identity_file", host.ssh_identity_file);
+    }
+    const query = params.size ? `?${params}` : "";
+    return request<ClaudeStatusResponse>("GET", `/claude/status${query}`, { signal });
+  },
+
+  trustClaudeWorkerWorkspace: (sessionId: string) =>
+    request<void>("POST", `${sessionPath(sessionId)}/claude-worker-trust`),
+
+  getClaudePermissions: (sessionId: string, signal?: AbortSignal) =>
+    request<ClaudePermissionRequest[]>("GET", `${sessionPath(sessionId)}/claude-permissions`, {
+      signal,
+    }),
+
+  replyClaudePermission: (
+    sessionId: string,
+    requestId: string,
+    runId: string,
+    generation: number,
+    reply: "allow_once" | "deny",
+  ) =>
+    request<void>(
+      "POST",
+      `${sessionPath(sessionId)}/claude-permissions/${encodeURIComponent(requestId)}/reply`,
+      { body: { run_id: runId, generation, reply } },
+    ),
+
   getManagedStatus: (signal?: AbortSignal) =>
     request<ManagedHostStatus>("GET", "/managed/status", { signal }),
 
@@ -384,8 +425,8 @@ export const api = {
     }),
 
   /** Validates the key as a side effect: a bad key cannot list models. */
-  listProviderModels: (payload: ProviderModelsRequest) =>
-    request<ProviderModelList>("POST", "/providers/models", { body: payload }),
+  listProviderModels: (payload: ProviderModelsRequest, signal?: AbortSignal) =>
+    request<ProviderModelList>("POST", "/providers/models", { body: payload, signal }),
 
   /**
    * The server's own catalog: limits, prices and effort support for the models

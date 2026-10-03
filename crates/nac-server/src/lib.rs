@@ -20,17 +20,18 @@ pub(crate) use managed_control::running_target as managed_running_target;
 
 pub use compaction::{CompactSessionError, CompactSessionResponse};
 pub use delivery::contracts::{
-    ApiErrorBody, CancelInboxItemRequest, ClearGoalRequest, CreateGoalRequest,
-    CreateInboxItemRequest, CreateSessionRequest, EventsQuery, HeadersRequest, HealthResponse,
-    InboxItemResponse, LaggedEvent, LaunchModelDefaults, LaunchModelDefaultsRequest,
-    ManagedSessionSummary, MessageCycleMetadata, MessagePageMetadata, MessagesPageResponse,
-    MessagesQuery, OrchestratorSteeringRequest, OrchestratorSteeringResponse,
+    ApiErrorBody, CancelInboxItemRequest, ClaudeStatusQuery, ClaudeStatusResponse,
+    ClearGoalRequest, CreateGoalRequest, CreateInboxItemRequest, CreateSessionRequest, EventsQuery,
+    HeadersRequest, HealthResponse, InboxItemResponse, LaggedEvent, LaunchModelDefaults,
+    LaunchModelDefaultsRequest, ManagedSessionSummary, MessageCycleMetadata, MessagePageMetadata,
+    MessagesPageResponse, MessagesQuery, OrchestratorSteeringRequest, OrchestratorSteeringResponse,
     PermissionStateResponse, ProviderModelList, ProviderModelsRequest, RecentEventsResponse,
-    ReplayBoundaryEvent, ReplayGapEvent, ReplyPermissionRequest, RequestField, SandboxRequest,
-    SessionLineageKind, SessionLineageSnapshot, SessionSnapshotQuery, SessionSnapshotResponse,
-    SshBrowseRequest, StoreInfo, SubmitPromptRequest, SubmitPromptResponse, ThreadEventsQuery,
-    ThreadSteeringRequest, ThreadSteeringResponse, UpdateConfigRequest, UpdateGoalRequest,
-    UpdateInboxItemRequest, UpdatePermissionApprovalModeRequest,
+    ReplayBoundaryEvent, ReplayGapEvent, ReplyClaudePermissionRequest, ReplyPermissionRequest,
+    RequestField, SandboxRequest, SessionLineageKind, SessionLineageSnapshot, SessionSnapshotQuery,
+    SessionSnapshotResponse, SshBrowseRequest, StoreInfo, SubmitPromptRequest,
+    SubmitPromptResponse, ThreadEventsQuery, ThreadSteeringRequest, ThreadSteeringResponse,
+    UpdateConfigRequest, UpdateGoalRequest, UpdateInboxItemRequest,
+    UpdatePermissionApprovalModeRequest,
 };
 pub use delivery::credentials::{
     GeneratedCredential, StoreCredentialRequest, StoredCredentialList, StoredCredentialSummary,
@@ -1065,16 +1066,6 @@ impl SessionManager {
             active.remove(&session_id);
             eprintln!("nac: evicted idle session {session_id}");
         }
-    }
-
-    pub async fn create_session(
-        &self,
-        request: CreateSessionRequest,
-    ) -> Result<SessionFrontendSnapshot> {
-        let _host_admission = self.managed_work_admission()?;
-        self.session_creation()
-            .create_session(request.into_application())
-            .await
     }
 
     fn newest_primary_project_session_id(&self, project_id: &str) -> Result<Option<String>> {

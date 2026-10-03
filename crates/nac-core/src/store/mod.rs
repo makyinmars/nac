@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
+mod claude_processes;
 mod managed_maintenance;
 mod managed_orchestrators;
 mod model_configurations;
@@ -27,6 +28,12 @@ mod transcript;
 mod worksets;
 mod workspace_revisions;
 
+pub use claude_processes::*;
+pub use claude_processes::{
+    clear_claude_process_marker as clear_claude_process,
+    insert_claude_process_marker as register_claude_process,
+    list_claude_process_markers as list_claude_processes,
+};
 pub use managed_maintenance::*;
 pub use managed_orchestrators::*;
 pub use model_configurations::*;
@@ -171,10 +178,50 @@ pub struct EpisodeRecord {
 pub struct ThreadRecord {
     pub name: String,
     pub session_id: String,
+    pub agent: ThreadAgent,
     pub created_at: String,
     pub updated_at: String,
     pub episode_count: i64,
     pub latest_action: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum ThreadAgent {
+    #[default]
+    Nac,
+    Claude,
+}
+
+impl ThreadAgent {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Nac => "nac",
+            Self::Claude => "claude",
+        }
+    }
+}
+
+impl std::str::FromStr for ThreadAgent {
+    type Err = anyhow::Error;
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "nac" => Ok(Self::Nac),
+            "claude" => Ok(Self::Claude),
+            _ => Err(anyhow!("unsupported stored thread agent '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ClaudeThreadBinding {
+    pub host_id: Option<String>,
+    pub ssh_port: Option<u16>,
+    pub ssh_identity_file: Option<String>,
+    pub workspace: PathBuf,
+    pub config_dir: Option<String>,
+    pub native_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -311,6 +311,13 @@ printf '%s%s' "$base" "$suffix"
             Self::Ssh(_) => false,
         }
     }
+
+    pub(crate) fn ssh_connection(&self) -> Option<&SshConnection> {
+        match self {
+            Self::Ssh(ssh) => Some(ssh.connection()),
+            Self::Local { .. } | Self::Sandbox(_) => None,
+        }
+    }
 }
 
 fn remove_native_integration_credentials(command: &mut Command) {

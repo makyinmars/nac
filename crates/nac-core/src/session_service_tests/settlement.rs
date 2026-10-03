@@ -42,7 +42,7 @@ async fn finish_run_persists_snapshot_before_completion_event() {
         .try_begin_run(Some(client.client_id().clone()), "prompt")
         .unwrap();
     {
-        let mut agent = parts.service.agent.lock().await;
+        let mut agent = parts.service.nac_agent().unwrap().lock().await;
         agent
             .push_and_log_for_test(Message::User {
                 content: "prompt".to_string(),
@@ -165,7 +165,7 @@ async fn run_end_persists_run_state_without_rewriting_messages_json() {
             .service
             .set_run_transcript_baseline(&active.run_id, loaded_visible_response_count);
         {
-            let mut agent = parts.service.agent.lock().await;
+            let mut agent = parts.service.nac_agent().unwrap().lock().await;
             agent
                 .push_and_log_for_test(Message::User {
                     content: prompt.to_string(),
@@ -412,7 +412,8 @@ async fn recovered_session_continues_without_model_bookkeeping_and_clears_warnin
     let interrupted_run_id = SessionRunId::new();
     parts
         .service
-        .agent
+        .nac_agent()
+        .unwrap()
         .lock()
         .await
         .push_and_log_run_prompt_for_test(
@@ -515,7 +516,7 @@ async fn finish_run_persists_token_usage() {
     let active = parts.service.try_begin_run(None, "prompt").unwrap();
     parts.service.set_run_transcript_baseline(&active.run_id, 0);
     {
-        let mut agent = parts.service.agent.lock().await;
+        let mut agent = parts.service.nac_agent().unwrap().lock().await;
         agent
             .push_and_log_for_test(Message::User {
                 content: "prompt".to_string(),
@@ -632,7 +633,7 @@ async fn failed_run_without_visible_response_round_trips_token_usage() {
     let active = parts.service.try_begin_run(None, "prompt").unwrap();
     parts.service.set_run_transcript_baseline(&active.run_id, 0);
     {
-        let mut agent = parts.service.agent.lock().await;
+        let mut agent = parts.service.nac_agent().unwrap().lock().await;
         agent
             .push_and_log_run_prompt_for_test(
                 Message::User {
@@ -946,7 +947,7 @@ async fn failed_run_normalizes_the_dangling_tool_turn_for_the_next_run() {
     // The dangling assistant tool-call turn is trimmed from the vec AND
     // the log: both end at the failed run's prompt.
     {
-        let agent = parts.service.agent.lock().await;
+        let agent = parts.service.nac_agent().unwrap().lock().await;
         assert_eq!(agent.messages.len(), 2);
         assert!(
             matches!(agent.messages[1], Message::User { ref content } if content == "prompt one")

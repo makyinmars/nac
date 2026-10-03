@@ -213,6 +213,11 @@ impl NacMcpService {
         };
         let request = CreateSessionRequest {
             behavior: nac_core::sessions::SessionBehavior::Orchestrator,
+            agent_runtime: nac_core::sessions::AgentRuntime::Nac,
+            claude_executable: None,
+            claude_model: None,
+            claude_config_dir: None,
+            claude_trusted_workspace: false,
             first_chat: false,
             project_id: params.project_id,
             cwd: params.cwd.map(std::path::PathBuf::from),

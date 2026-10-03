@@ -44,6 +44,7 @@ pub use crate::worker_credentials::{
 use crate::workspace::GitTarget;
 
 mod builders;
+mod claude;
 mod configuration;
 mod contracts;
 mod model_resolution;
@@ -54,6 +55,11 @@ mod sandboxing;
 pub use builders::{
     build_managed_worker_config, build_run_config, build_run_config_for_project,
     build_run_config_for_project_with_behavior,
+};
+pub use claude::{
+    build_claude_resume_config_for_session, build_claude_resume_config_for_session_attachment,
+    build_claude_resume_config_for_session_with_lease, build_claude_run_config_for_project,
+    ClaudeRunConfig,
 };
 #[cfg(test)]
 use configuration::NonModelNacConfig;

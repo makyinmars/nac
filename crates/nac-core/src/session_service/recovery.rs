@@ -34,6 +34,7 @@ impl SessionService {
         operation_lease
             .validate(&self.metadata.store_path, session_id)
             .map_err(anyhow::Error::new)?;
+        self.settle_claude_process_markers().await?;
         let recovery = crate::store::reconcile_active_run(&self.metadata.store_path, session_id)?;
         let mut snapshot =
             sessions::load_session_async(self.metadata.store_path.clone(), session_id.to_string())
@@ -44,8 +45,10 @@ impl SessionService {
             ));
         }
 
-        let (transcript_scan, transcript_warning, terminal_report) = {
-            let mut agent = self.agent.lock().await;
+        let (transcript_scan, transcript_warning, terminal_report) = if let Some(agent) =
+            self.nac_agent()
+        {
+            let mut agent = agent.lock().await;
             if let Some(refreshed_blob) = agent
                 .restore_messages_merging_log_tail(snapshot.messages.clone(), Some(operation_lease))
                 .await?
@@ -56,6 +59,21 @@ impl SessionService {
                 TranscriptScanCache::from_transcript(&agent.messages),
                 agent.transcript_recovery_warning().map(str::to_owned),
                 latest_terminal_assistant_report(&agent.messages),
+            )
+        } else {
+            let mut messages = snapshot.messages.clone();
+            if let Some(writer) = self.transcript_log.as_ref() {
+                messages.extend(
+                    writer
+                        .read_tail_from(session_id, messages.len() as u64)?
+                        .into_iter()
+                        .map(|(_, message)| message),
+                );
+            }
+            (
+                TranscriptScanCache::from_transcript(&messages),
+                None,
+                latest_terminal_assistant_report(&messages),
             )
         };
         *self.session_snapshot.lock().await = Some(snapshot);

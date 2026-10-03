@@ -482,7 +482,7 @@ pub(super) fn git_subcommand_index(tokens: &[String], command_index: usize) -> O
 
 pub(super) fn git_c_path_position(tokens: &[String], command_index: usize, index: usize) -> bool {
     if index <= command_index
-        || !git_subcommand_index(tokens, command_index).is_some_and(|subcommand| index < subcommand)
+        || git_subcommand_index(tokens, command_index).is_none_or(|subcommand| index >= subcommand)
     {
         return false;
     }

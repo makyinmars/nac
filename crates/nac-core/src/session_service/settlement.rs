@@ -17,11 +17,29 @@ impl SessionService {
             if !retry_cleanup {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            let retry_delay = if self.claude_engine().is_some() {
+                // A disconnected SSH host may need time to return. Keep the
+                // durable operation active without hammering the connection.
+                Duration::from_secs(2)
+            } else {
+                Duration::from_millis(100)
+            };
+            tokio::time::sleep(retry_delay).await;
         }
     }
 
     pub(super) async fn finish_run_once(&self, run_id: &SessionRunId, outcome: RunOutcome) -> bool {
+        // Claude workers can run inside a NAC orchestrator. Their process
+        // marker is also a settlement obligation for the parent run.
+        if let Err(error) = self.settle_claude_process_markers().await {
+            self.event_bus.emit_agent(AgentEvent::Error {
+                thread_name: None,
+                message: format!(
+                    "run {run_id} remains active until Claude process cleanup succeeds: {error:#}"
+                ),
+            });
+            return false;
+        }
         if self.metadata.behavior != sessions::SessionBehavior::Orchestrator {
             if let Err(error) = self.terminal_manager.settle_run().await {
                 self.event_bus.emit_agent(AgentEvent::Error {
@@ -206,7 +224,9 @@ impl SessionService {
                 eprintln!("nac: failed to settle durable goal for run {run_id}: {error:#}");
             }
         }
-        self.agent.lock().await.end_goal_run(run_id);
+        if let Some(agent) = self.nac_agent() {
+            agent.lock().await.end_goal_run(run_id);
+        }
     }
 
     pub(super) fn settle_traditional_child_run(
@@ -370,7 +390,10 @@ impl SessionService {
     /// stale tail. Prompt/assistant append failures need no normalization
     /// (log-first: those messages are in neither store).
     pub(super) async fn normalize_failed_run_transcript(&self) {
-        let mut agent = self.agent.lock().await;
+        let Some(agent) = self.nac_agent() else {
+            return;
+        };
+        let mut agent = agent.lock().await;
         let result = if self.metadata.behavior == sessions::SessionBehavior::Orchestrator {
             agent.normalize_dangling_tail().await
         } else {

@@ -70,6 +70,7 @@ pub(crate) fn api_kind_for(provider: BackendKind) -> ApiKind {
         BackendKind::OpenAiResponses => ApiKind::OpenAiResponses,
         BackendKind::ChatGptCodexResponses => ApiKind::ChatGptCodexResponses,
         BackendKind::AnthropicMessages => ApiKind::AnthropicMessages,
+        BackendKind::ClaudeAgent => unreachable!("Claude Agent is not a catalog provider"),
     }
 }
 
@@ -349,6 +350,11 @@ impl ModelCatalog {
     /// Resolve metadata for `model` on `provider` through
     /// [`ProviderCatalog::resolve_entry`]; never fails for unknown models.
     pub fn resolve(&self, provider: BackendKind, model: &str) -> ModelMetadata {
+        assert_ne!(
+            provider,
+            BackendKind::ClaudeAgent,
+            "Claude Agent is not a catalog provider"
+        );
         let Some(catalog) = self.providers.get(&provider) else {
             // Unreachable while every provider ships a seed `_default` entry;
             // resolution must still never fail.
@@ -437,6 +443,7 @@ fn provider_auth(provider: BackendKind) -> ProviderAuth {
     match provider {
         BackendKind::ArceeAuth => ProviderAuth::ManagedArcee,
         BackendKind::ChatGptCodexResponses => ProviderAuth::CodexOauth,
+        BackendKind::ClaudeAgent => unreachable!("Claude Agent is not a catalog provider"),
         other => unreachable!("non-API-key backend '{other}' has managed auth"),
     }
 }

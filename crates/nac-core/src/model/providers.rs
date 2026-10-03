@@ -40,6 +40,7 @@ pub fn provider_default_base_url(backend: BackendKind) -> Option<&'static str> {
         BackendKind::TogetherChat => Some("https://api.together.xyz/v1"),
         BackendKind::ArceeApi | BackendKind::ArceeAuth => Some(ARCEE_AUTH_CANONICAL_BASE_URL),
         BackendKind::ChatGptCodexResponses => Some(CHATGPT_CODEX_CANONICAL_BASE_URL),
+        BackendKind::ClaudeAgent => None,
     }
 }
 
@@ -78,6 +79,7 @@ fn models_url(backend: BackendKind, base_url: &str) -> Option<String> {
         | BackendKind::TogetherChat
         | BackendKind::ArceeApi
         | BackendKind::ArceeAuth => Some(format!("{trimmed}/models")),
+        BackendKind::ClaudeAgent => None,
     }
 }
 
@@ -165,6 +167,11 @@ pub async fn list_provider_models_with_http_policy(
     api_key: &str,
     allow_insecure_http: bool,
 ) -> Result<Vec<ProviderModel>> {
+    if backend == BackendKind::ClaudeAgent {
+        return Err(anyhow!(
+            "'claude-agent' is a separate agent runtime, not a model provider"
+        ));
+    }
     // A backend that signs in through a browser has a model index, but it is
     // read with the stored login; a key offered for one is a caller mistake and
     // must not be forwarded.
@@ -297,6 +304,7 @@ mod tests {
             | BackendKind::TogetherChat
             | BackendKind::ArceeApi => true,
             BackendKind::ChatGptCodexResponses | BackendKind::ArceeAuth => false,
+            BackendKind::ClaudeAgent => unreachable!("storage marker is not a provider"),
         }
     }
 

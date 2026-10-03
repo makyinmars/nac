@@ -31,6 +31,10 @@ pub struct SshBackend {
 }
 
 impl SshBackend {
+    pub(crate) fn connection(&self) -> &SshConnection {
+        &self.connection
+    }
+
     #[cfg(test)]
     pub fn new(ssh_host: String, remote_cwd: PathBuf) -> Self {
         let config_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -308,7 +312,7 @@ fn make_ssh_pidfile() -> String {
     format!("{SSH_PIDFILE_DIR}/{}.pid", Uuid::new_v4().simple())
 }
 
-fn ssh_wrapper_script(wrapper: &str) -> String {
+pub(crate) fn ssh_wrapper_script(wrapper: &str) -> String {
     format!(
         r#"umask 077
 pidfile_dir="$HOME/.cache/nac/exec"

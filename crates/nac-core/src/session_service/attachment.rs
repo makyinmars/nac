@@ -29,6 +29,14 @@ impl SessionService {
         let event_bus =
             SessionEventBus::with_thread_event_store(session_id.clone(), store_path.clone());
         let events = event_bus.subscribe();
+        let claude_approval_broker = session_id.as_ref().map(|session_id| {
+            crate::claude_approval::ClaudeApprovalBroker::new(session_id.clone(), event_bus.clone())
+        });
+        if let Some(broker) = &claude_approval_broker {
+            run_config
+                .agent
+                .install_claude_approval_broker(Arc::clone(broker));
+        }
         run_config
             .agent
             .set_event_sink(EventSink::bus(event_bus.clone()));
@@ -61,6 +69,7 @@ impl SessionService {
             backend: run_config.client.backend().as_str().to_string(),
             session_id,
             behavior,
+            agent_runtime: sessions::AgentRuntime::Nac,
             project_id,
             sandbox_status: run_config.sandbox_status,
             agents_md_status: run_config.agents_md_status,
@@ -97,10 +106,15 @@ impl SessionService {
         } else {
             TranscriptScanCache::default()
         };
+        let durable_session_row_present =
+            metadata.session_id.as_deref().is_some_and(|session_id| {
+                sessions::session_exists(&metadata.store_path, session_id).unwrap_or(true)
+            });
         let service = Self {
-            agent: Arc::new(Mutex::new(run_config.agent)),
+            engine: SessionEngine::Nac(Arc::new(Mutex::new(run_config.agent))),
             goal_runtime,
             metadata: Arc::new(metadata.clone()),
+            durable_session_row_present,
             workspace_git,
             config_version,
             session_snapshot: Arc::new(Mutex::new(session_snapshot)),
@@ -114,6 +128,7 @@ impl SessionService {
             skills,
             terminal_manager,
             permission_broker,
+            claude_approval_broker,
             sandbox_resource_lease: Arc::new(StdMutex::new(None)),
             has_sandbox,
             managed_admission_enabled: false,
@@ -134,6 +149,102 @@ impl SessionService {
             init,
             events,
         }
+    }
+
+    pub fn from_claude_run_config(run_config: ClaudeRunConfig) -> Result<SessionServiceParts> {
+        let snapshot = run_config.snapshot;
+        let session_id = snapshot.session_id.clone();
+        let store_path = run_config.store_path;
+        let event_bus =
+            SessionEventBus::with_thread_event_store(Some(session_id.clone()), store_path.clone());
+        let events = event_bus.subscribe();
+        let claude_approval_broker = crate::claude_approval::ClaudeApprovalBroker::new(
+            session_id.clone(),
+            event_bus.clone(),
+        );
+        let transcript_log = Arc::new(crate::store::TranscriptLogWriter::new(&store_path)?);
+        let mut restored_messages = snapshot.messages.clone();
+        restored_messages.extend(
+            transcript_log
+                .read_tail_from(&session_id, restored_messages.len() as u64)?
+                .into_iter()
+                .map(|(_, message)| message),
+        );
+        let response_timing = ResponseTimingSnapshot::from_session_snapshot(Some(&snapshot));
+        let workspace_git = run_config.workspace_git;
+        let metadata = SessionMetadata {
+            cwd: run_config.workspace_display,
+            workspace_host_path: workspace_git.local_path().map(Path::to_path_buf),
+            store_path: store_path.clone(),
+            model: snapshot.model.clone(),
+            backend: "claude-agent".to_string(),
+            session_id: Some(session_id.clone()),
+            behavior: snapshot.behavior,
+            agent_runtime: sessions::AgentRuntime::ClaudeAgent,
+            project_id: snapshot.project_id.clone(),
+            sandbox_status: "off".to_string(),
+            agents_md_status: "claude-agent".to_string(),
+            base_url: String::new(),
+            reasoning_effort: None,
+            api_key_env: None,
+            extra_headers: BTreeMap::new(),
+        };
+        let terminal_manager = crate::terminal::TerminalManager::for_direct();
+        terminal_manager
+            .configure_workspace_authority(store_path.clone(), workspace_git.lease_identity());
+        terminal_manager.configure_session_resource_authority(store_path, session_id);
+        let claude_config = snapshot
+            .claude_agent
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Claude Agent snapshot has no launch settings"))?;
+        let engine = ClaudeSessionEngine {
+            target: snapshot.ssh.clone().map_or(
+                crate::claude_agent::Target::Local,
+                crate::claude_agent::Target::Ssh,
+            ),
+            cwd: snapshot.cwd.clone(),
+            config: claude_config,
+            partial_output: Arc::new(StdMutex::new(String::new())),
+        };
+        let service = Self {
+            engine: SessionEngine::Claude(Arc::new(engine)),
+            goal_runtime: None,
+            metadata: Arc::new(metadata.clone()),
+            durable_session_row_present: true,
+            workspace_git: Some(workspace_git),
+            config_version: Some(snapshot.config_version),
+            session_snapshot: Arc::new(Mutex::new(Some(snapshot))),
+            transcript_recovery_warning: Arc::new(StdMutex::new(None)),
+            reconciled_recovery_run_id: Arc::new(StdMutex::new(None)),
+            transcript_log: Some(transcript_log),
+            transcript_scan: Arc::new(StdMutex::new(TranscriptScanCache::from_transcript(
+                &restored_messages,
+            ))),
+            event_bus,
+            active_operation: Arc::new(StdMutex::new(None)),
+            active_threads: Arc::new(crate::tools::ActiveThreadRegistry::default()),
+            skills: None,
+            terminal_manager,
+            permission_broker: None,
+            claude_approval_broker: Some(claude_approval_broker),
+            sandbox_resource_lease: Arc::new(StdMutex::new(None)),
+            has_sandbox: false,
+            managed_admission_enabled: false,
+            managed_identity: None,
+            inbox_wake: Arc::new(Mutex::new(())),
+            goal_retry_wake: Arc::new(StdMutex::new(None)),
+            #[cfg(test)]
+            frontend_snapshot_after_workspace_gate: None,
+        };
+        Ok(SessionServiceParts {
+            service,
+            init: SessionServiceInit {
+                metadata,
+                restored_messages,
+                response_timing,
+            },
+            events,
+        })
     }
 
     pub fn enable_managed_admission(
@@ -329,8 +440,11 @@ impl SessionService {
     /// commits; removing workspace files here would make a later database
     /// failure retain a session whose uncommitted work had already been lost.
     pub async fn destroy_sandbox(&self) -> Result<()> {
+        let Some(agent) = self.nac_agent() else {
+            return Ok(());
+        };
         let sandbox = {
-            let agent = self.agent.lock().await;
+            let agent = agent.lock().await;
             agent.sandbox_session()
         };
         if let Some(sandbox) = sandbox {

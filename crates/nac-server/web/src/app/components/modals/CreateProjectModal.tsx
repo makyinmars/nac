@@ -22,6 +22,11 @@ import {
   TextArea,
 } from "@/app/atoms";
 import { ConfigRow, FieldLabel } from "@/app/components/modals/ConfigRow";
+import { AgentRuntimePicker, type AgentRuntime } from "@/app/components/modals/AgentRuntimePicker";
+import {
+  ClaudeLaunchSettings,
+  type ClaudeLaunchSelection,
+} from "@/app/components/modals/ClaudeLaunchSettings";
 import {
   ConfigurationsPanel,
   type LaunchModelSelection,
@@ -65,7 +70,6 @@ import type {
 } from "@/app/types/api";
 
 type Mode = "local" | "ssh" | "sandbox";
-
 const MODES: { id: Mode; label: string; description: string }[] = [
   {
     id: "local",
@@ -156,6 +160,13 @@ function CreateProjectForm({
 
   const [mode, setMode] = useState<Mode>("local");
   const [behavior, setBehavior] = useState<SessionBehavior>("orchestrator");
+  const [runtime, setRuntime] = useState<AgentRuntime>("nac");
+  const [claude, setClaude] = useState<ClaudeLaunchSelection>({
+    executable: "claude",
+    model: "",
+    configDir: "",
+    trustedWorkspace: false,
+  });
   const [cwd, setCwd] = useState(defaultCwd);
   const [name, setName] = useState("");
   const [reasoning, setReasoning] = useState("");
@@ -331,6 +342,53 @@ function CreateProjectForm({
     }
     if (!nullable(cwd)) {
       setError({ field: "cwd", message: "A working folder is required." });
+      return;
+    }
+    if (runtime === "claude-agent") {
+      if (!claude.trustedWorkspace) {
+        setError({ field: "config", message: "Confirm that you trust this workspace." });
+        return;
+      }
+      let projectId: string;
+      try {
+        const project = await createProject.mutateAsync({
+          name: nullable(name),
+          cwd,
+          ssh_host: connected?.ssh_host ?? null,
+          ssh_port: connected?.ssh_port ?? null,
+          ssh_identity_file: connected?.ssh_identity_file ?? null,
+          default_model_config_id: null,
+        });
+        projectId = project.project_id;
+      } catch (projectError) {
+        setError({ field: "cwd", message: humanErrorText(toRunError(projectError)) });
+        return;
+      }
+      try {
+        const request: CreateSessionRequest = {
+          behavior: "direct",
+          agent_runtime: "claude-agent",
+          first_chat: true,
+          project_id: projectId,
+          claude_executable: claude.executable.trim() || "claude",
+          claude_model: claude.model.trim() || null,
+          claude_config_dir: claude.configDir.trim() || null,
+          claude_trusted_workspace: true,
+        };
+        const snapshot = await createSession.mutateAsync(request);
+        toast.success("Project created");
+        navigate(
+          snapshot.metadata.session_id
+            ? routes.session(snapshot.metadata.session_id)
+            : routes.project(projectId),
+        );
+      } catch (createError) {
+        toast.error(
+          `Project created, but the first chat failed: ${humanErrorText(toRunError(createError))}`,
+        );
+        navigate(routes.project(projectId));
+      }
+      onClose();
       return;
     }
     if (!selection) {
@@ -523,7 +581,12 @@ function CreateProjectForm({
             content={ButtonContent.Text}
             onClick={submit}
             loading={busy}
-            disabled={Boolean(error) || !selection || !ready}
+            disabled={
+              Boolean(error) ||
+              (runtime === "nac" && !selection) ||
+              (runtime === "claude-agent" && !claude.trustedWorkspace) ||
+              !ready
+            }
           >
             Create Project
           </StickyButton>
@@ -534,7 +597,12 @@ function CreateProjectForm({
             content={ButtonContent.Text}
             onClick={submit}
             loading={busy}
-            disabled={Boolean(error) || !selection || !ready}
+            disabled={
+              Boolean(error) ||
+              (runtime === "nac" && !selection) ||
+              (runtime === "claude-agent" && !claude.trustedWorkspace) ||
+              !ready
+            }
           >
             Create Project
           </Button>
@@ -542,12 +610,28 @@ function CreateProjectForm({
       }
     >
       <div className="flex flex-col gap-8 md:gap-6 [&>*]:shrink-0">
-        <SessionBehaviorPicker value={behavior} onChange={setBehavior} disabled={busy} />
+        <AgentRuntimePicker
+          value={runtime}
+          onChange={(next) => {
+            setRuntime(next);
+            if (next === "claude-agent") {
+              setBehavior("direct");
+              if (mode === "sandbox") changeMode("local");
+            }
+            setError(null);
+          }}
+          disabled={busy}
+        />
+        {runtime === "nac" ? (
+          <SessionBehaviorPicker value={behavior} onChange={setBehavior} disabled={busy} />
+        ) : (
+          <p className="text-micro text-basic-secondary">Claude Agent uses direct chat behavior.</p>
+        )}
 
         <div className="flex flex-col gap-1">
           <FieldLabel label="Environment" hint="Where NAC runs commands and accesses files." />
           <div className="flex items-start gap-3">
-            {MODES.map((item) => (
+            {MODES.filter((item) => runtime === "nac" || item.id !== "sandbox").map((item) => (
               <Button
                 key={item.id}
                 variant={mode === item.id ? ButtonVariant.Primary : ButtonVariant.Secondary}
@@ -638,7 +722,11 @@ function CreateProjectForm({
           </div>
         ) : null}
 
-        {ready ? (
+        {ready && runtime === "claude-agent" ? (
+          <ClaudeLaunchSettings value={claude} onChange={setClaude} host={connected} />
+        ) : null}
+
+        {ready && runtime === "nac" ? (
           <ConfigurationsPanel
             invalid={invalid("config")}
             errorText={invalid("config") ? error?.message : undefined}

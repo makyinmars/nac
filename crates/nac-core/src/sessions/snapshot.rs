@@ -70,6 +70,9 @@ pub fn new_snapshot(
     SessionSnapshot {
         session_id,
         behavior: SessionBehavior::Orchestrator,
+        agent_runtime: AgentRuntime::Nac,
+        claude_agent: None,
+        claude_worker_trusted_workspace: false,
         project_id: None,
         cwd,
         model,
@@ -106,6 +109,9 @@ pub fn refresh_snapshot(
     SessionSnapshot {
         session_id: snapshot.session_id.clone(),
         behavior: snapshot.behavior,
+        agent_runtime: snapshot.agent_runtime,
+        claude_agent: snapshot.claude_agent.clone(),
+        claude_worker_trusted_workspace: snapshot.claude_worker_trusted_workspace,
         project_id: snapshot.project_id.clone(),
         cwd: snapshot.cwd.clone(),
         model: snapshot.model.clone(),

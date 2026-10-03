@@ -149,13 +149,16 @@ export function useManagedProviderModels(
   });
 }
 
-export function useReadyProviderModels(catalog: ModelCatalog | undefined) {
+export function useReadyProviderModels(catalog: ModelCatalog | undefined, enabled = true) {
   const status = useManagedHostStatus().data ?? null;
-  const ready = useMemo(() => readyProviderModelRequests(catalog, status), [catalog, status]);
+  const ready = useMemo(
+    () => (enabled ? readyProviderModelRequests(catalog, status) : []),
+    [catalog, status, enabled],
+  );
   const results = useQueries({
     queries: ready.map((request) => ({
       queryKey: managedQueryKeys.providerModels(request.backend, request.base_url),
-      queryFn: () => api.listProviderModels(request),
+      queryFn: ({ signal }) => api.listProviderModels(request, signal),
       retry: false,
       staleTime: 5 * 60_000,
     })),

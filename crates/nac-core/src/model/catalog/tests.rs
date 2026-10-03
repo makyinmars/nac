@@ -119,6 +119,7 @@ fn pre_s4_matrix_accepts(provider: BackendKind, model: &str, effort: ReasoningEf
             }
         }
         BackendKind::ArceeAuth | BackendKind::ArceeApi => false,
+        BackendKind::ClaudeAgent => unreachable!("storage marker is not a model provider"),
     }
 }
 

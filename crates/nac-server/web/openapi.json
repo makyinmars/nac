@@ -306,6 +306,71 @@
         }
       }
     },
+    "/claude/status": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "get_claude_status",
+        "parameters": [
+          {
+            "name": "ssh_host",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ssh_port",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "ssh_identity_file",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "claude_executable",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "claude_config_dir",
+            "in": "query",
+            "description": "Absolute CLAUDE_CONFIG_DIR on the selected execution host.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Claude Code availability on the selected host",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/commands": {
       "get": {
         "tags": [
@@ -3539,6 +3604,173 @@
         }
       }
     },
+    "/sessions/{session_id}/claude-permissions": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "get_sessions_session_id_claude_permissions",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending Claude tool approvals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClaudePermissionRequest"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/claude-permissions/{request_id}/reply": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "post_sessions_session_id_claude_permissions_request_id_reply",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplyClaudePermissionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Claude permission replied"
+          },
+          "400": {
+            "description": "Invalid reply",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale approval",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/claude-worker-trust": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "post_sessions_session_id_claude_worker_trust",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace trusted for Claude workers"
+          },
+          "400": {
+            "description": "Unsupported session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Request failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sessions/{session_id}/compact": {
       "post": {
         "tags": [
@@ -3567,8 +3799,13 @@
             }
           },
           "400": {
-            "description": "Path extraction failed",
+            "description": "Unsupported runtime or path extraction failed",
             "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              },
               "text/plain": {
                 "schema": {
                   "type": "string"
@@ -7499,6 +7736,12 @@
               "name": {
                 "type": "string"
               },
+              "parent_call_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "thread_name": {
                 "type": [
                   "string",
@@ -7585,6 +7828,12 @@
               },
               "name": {
                 "type": "string"
+              },
+              "parent_call_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "remote_outcome_uncertain": {
                 "type": "boolean"
@@ -8081,6 +8330,14 @@
           }
         ]
       },
+      "AgentRuntime": {
+        "type": "string",
+        "description": "Immutable owner of the model loop for a top-level session.",
+        "enum": [
+          "nac",
+          "claude-agent"
+        ]
+      },
       "ApiErrorBody": {
         "type": "object",
         "required": [
@@ -8158,7 +8415,8 @@
           "chatgpt-codex-responses",
           "anthropic-messages",
           "arcee-auth",
-          "arcee-api"
+          "arcee-api",
+          "claude-agent"
         ]
       },
       "Branch": {
@@ -8305,6 +8563,118 @@
           },
           "status": {
             "type": "string"
+          }
+        }
+      },
+      "ClaudeAgentSession": {
+        "type": "object",
+        "description": "Claude launch settings, pinned to the snapshot's workspace and SSH host.",
+        "required": [
+          "executable",
+          "trusted_workspace"
+        ],
+        "properties": {
+          "config_dir": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "executable": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "native_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trusted_workspace": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ClaudePermissionReply": {
+        "type": "string",
+        "enum": [
+          "allow_once",
+          "deny"
+        ]
+      },
+      "ClaudePermissionRequest": {
+        "type": "object",
+        "required": [
+          "id",
+          "claude_request_id",
+          "session_id",
+          "run_id",
+          "generation",
+          "tool_name",
+          "input_preview",
+          "created_at_epoch_ms"
+        ],
+        "properties": {
+          "claude_request_id": {
+            "type": "string"
+          },
+          "created_at_epoch_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "input_preview": {
+            "type": "string",
+            "description": "Complete JSON input within the UI's review limit. Larger requests are\ndenied instead of displaying an incomplete command for approval."
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "tool_name": {
+            "type": "string"
+          }
+        }
+      },
+      "ClaudeStatusResponse": {
+        "type": "object",
+        "required": [
+          "available",
+          "authenticated"
+        ],
+        "properties": {
+          "authenticated": {
+            "type": "boolean"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -8717,6 +9087,10 @@
       "CreateSessionRequest": {
         "type": "object",
         "properties": {
+          "agent_runtime": {
+            "$ref": "#/components/schemas/AgentRuntime",
+            "description": "Immutable owner of the model loop. Existing requests default to NAC."
+          },
           "allow_insecure_http": {
             "$ref": "#/components/schemas/RequestField_bool_bool",
             "description": "Explicitly permit public plaintext HTTP for this session's primary and light endpoints."
@@ -8733,6 +9107,31 @@
           "behavior": {
             "$ref": "#/components/schemas/SessionBehavior",
             "description": "Immutable execution behavior. Omission preserves the established\norchestrator default."
+          },
+          "claude_config_dir": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional absolute CLAUDE_CONFIG_DIR on the execution host."
+          },
+          "claude_executable": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Claude executable on the selected local or SSH host."
+          },
+          "claude_model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional Claude Code model selector; independent of NAC's model settings."
+          },
+          "claude_trusted_workspace": {
+            "type": "boolean",
+            "description": "Confirms the selected workspace is trusted to load Claude hooks and MCP servers."
           },
           "cwd": {
             "type": [
@@ -11654,6 +12053,27 @@
           }
         }
       },
+      "ReplyClaudePermissionRequest": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "generation",
+          "reply"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "reply": {
+            "$ref": "#/components/schemas/ClaudePermissionReply"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        }
+      },
       "ReplyPermissionRequest": {
         "type": "object",
         "required": [
@@ -11720,7 +12140,8 @@
               "chatgpt-codex-responses",
               "anthropic-messages",
               "arcee-auth",
-              "arcee-api"
+              "arcee-api",
+              "claude-agent"
             ]
           }
         ]
@@ -12477,6 +12898,69 @@
           },
           {
             "type": "object",
+            "description": "A Claude Code built-in tool request. This is separate from prepared NAC\ntool authorization and cannot create remembered native-tool grants.",
+            "required": [
+              "request",
+              "type"
+            ],
+            "properties": {
+              "request": {
+                "$ref": "#/components/schemas/ClaudePermissionRequest"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "claude_permission_asked"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "request_id",
+              "reply",
+              "type"
+            ],
+            "properties": {
+              "reply": {
+                "$ref": "#/components/schemas/ClaudePermissionReply"
+              },
+              "request_id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "claude_permission_replied"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "request_id",
+              "reason",
+              "type"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "request_id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "claude_permission_dismissed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "The durable answer policy for this direct session changed. No request\nresources or credential-bearing payloads are included.",
             "required": [
               "mode",
@@ -12707,6 +13191,16 @@
             "items": {
               "type": "string"
             }
+          },
+          "claude_agent": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ClaudeAgentSession"
+              }
+            ]
           },
           "covered_orchestrator_steering_ids": {
             "type": "array",
@@ -12983,6 +13477,9 @@
           "agents_md_status"
         ],
         "properties": {
+          "agent_runtime": {
+            "$ref": "#/components/schemas/AgentRuntime"
+          },
           "agents_md_status": {
             "type": "string"
           },
@@ -13128,11 +13625,17 @@
           "updated_at"
         ],
         "properties": {
+          "agent_runtime": {
+            "$ref": "#/components/schemas/AgentRuntime"
+          },
           "backend": {
             "type": "string"
           },
           "behavior": {
             "$ref": "#/components/schemas/SessionBehavior"
+          },
+          "claude_worker_trusted_workspace": {
+            "type": "boolean"
           },
           "created_at": {
             "type": "string"
@@ -13722,6 +14225,13 @@
           }
         }
       },
+      "ThreadAgent": {
+        "type": "string",
+        "enum": [
+          "nac",
+          "claude"
+        ]
+      },
       "ThreadEventDecodeDiagnostic": {
         "type": "object",
         "required": [
@@ -13818,6 +14328,9 @@
           "latest_action"
         ],
         "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/ThreadAgent"
+          },
           "created_at": {
             "type": "string"
           },

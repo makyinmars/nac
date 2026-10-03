@@ -724,6 +724,11 @@ function Detail({
             >
               {thread.name}
             </span>
+            {thread.agent === "claude" ? (
+              <span className="rounded-full bg-elevation-level-3 px-2 py-0.5 text-micro text-basic-secondary">
+                Claude
+              </span>
+            ) : null}
             {action ? <TaskButton action={action} /> : null}
           </div>
           <span className="code code-micro text-basic-muted truncate">{thread.updated_at}</span>
@@ -1012,7 +1017,7 @@ export function ThreadsView({
                 return (
                   <PanelRow
                     key={thread.name}
-                    label={thread.name}
+                    label={`${thread.name}${thread.agent === "claude" ? " · Claude" : ""}`}
                     active={thread.name === current?.name}
                     disabled={pending}
                     title={pending ? "Waiting on source threads" : task || undefined}

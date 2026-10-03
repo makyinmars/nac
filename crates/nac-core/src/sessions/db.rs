@@ -94,6 +94,17 @@ pub(crate) fn insert_new_session_in_transaction(
     path: &Path,
     snapshot: &SessionSnapshot,
 ) -> Result<()> {
+    validate_agent_runtime(snapshot)?;
+    if snapshot
+        .claude_agent
+        .as_ref()
+        .and_then(|config| config.native_session_id.as_ref())
+        .is_some()
+    {
+        return Err(anyhow!(
+            "Claude native session id must come from process initialization"
+        ));
+    }
     let existing: Option<String> = tx
         .query_row(
             "SELECT session_id FROM sessions WHERE session_id = ?1",
@@ -117,6 +128,47 @@ pub(crate) fn insert_new_session_in_transaction(
         )?;
     }
     Ok(())
+}
+
+fn validate_agent_runtime(snapshot: &SessionSnapshot) -> Result<()> {
+    match snapshot.agent_runtime {
+        AgentRuntime::Nac
+            if snapshot.claude_agent.is_none() && snapshot.backend != BackendKind::ClaudeAgent =>
+        {
+            Ok(())
+        }
+        AgentRuntime::Nac => Err(anyhow!("NAC sessions cannot carry Claude Agent settings")),
+        AgentRuntime::ClaudeAgent => {
+            let config = snapshot
+                .claude_agent
+                .as_ref()
+                .ok_or_else(|| anyhow!("Claude Agent settings are required"))?;
+            if snapshot.behavior != SessionBehavior::Direct {
+                return Err(anyhow!("Claude Agent sessions require direct behavior"));
+            }
+            if snapshot.backend != BackendKind::ClaudeAgent {
+                return Err(anyhow!(
+                    "Claude Agent sessions require the Claude Agent storage backend"
+                ));
+            }
+            if snapshot.sandbox_spec.is_some() {
+                return Err(anyhow!("Claude Agent cannot run in a sandbox"));
+            }
+            if snapshot.api_key_env.is_some()
+                || !snapshot.extra_headers.is_empty()
+                || snapshot.light_model.is_some()
+                || snapshot.orchestrator_compaction_threshold.is_some()
+            {
+                return Err(anyhow!("Claude Agent cannot carry NAC model configuration"));
+            }
+            if config.executable.trim().is_empty() || !config.trusted_workspace {
+                return Err(anyhow!(
+                    "Claude Agent requires an executable and trusted workspace"
+                ));
+            }
+            Ok(())
+        }
+    }
 }
 
 pub fn save_session(path: &Path, snapshot: &SessionSnapshot) -> Result<()> {
@@ -373,6 +425,88 @@ pub fn session_exists(path: &Path, session_id: &str) -> Result<bool> {
     .map_err(Into::into)
 }
 
+/// Records Claude's resume handle as soon as initialization supplies it.
+/// A different handle for the same session is never silently substituted.
+pub fn save_claude_native_session_id(path: &Path, session_id: &str, native_id: &str) -> Result<()> {
+    if native_id.trim().is_empty() {
+        return Err(anyhow!("Claude native session id is empty"));
+    }
+    let conn = crate::store::open_runtime_connection(path)?;
+    let changed = conn.execute(
+        "UPDATE sessions SET claude_native_session_id = ?3
+         WHERE session_id = ?1 AND agent_runtime = 'claude-agent'
+           AND (claude_native_session_id IS NULL OR claude_native_session_id = ?2)",
+        params![session_id, native_id, native_id],
+    )?;
+    if changed == 0 {
+        return Err(anyhow!(
+            "Claude native session id conflicts with the durable session binding"
+        ));
+    }
+    Ok(())
+}
+
+pub fn load_claude_worker_workspace_trust(path: &Path, session_id: &str) -> Result<bool> {
+    type TrustRow = (
+        bool,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<u16>,
+        Option<String>,
+    );
+    let conn = crate::store::open_runtime_connection(path)?;
+    let row: Option<TrustRow> = conn.query_row(
+        "SELECT claude_worker_trusted_workspace, claude_worker_trust_binding_json, cwd, host_id, ssh_port, ssh_identity_file FROM sessions WHERE session_id = ?1",
+        params![session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+    ).optional()?;
+    let Some((trusted, binding, cwd, host, port, identity)) = row else {
+        return Err(anyhow!("session '{session_id}' was not found"));
+    };
+    Ok(trusted
+        && binding.as_deref()
+            == Some(
+                claude_worker_trust_binding(&cwd, host.as_deref(), port, identity.as_deref())?
+                    .as_str(),
+            ))
+}
+
+/// Explicit user action that permits Claude workers in this session's pinned
+/// workspace. It is only valid on NAC orchestrator sessions.
+pub fn trust_claude_worker_workspace(path: &Path, session_id: &str) -> Result<()> {
+    type HostBindingRow = (String, Option<String>, Option<u16>, Option<String>);
+    let mut conn = crate::store::open_runtime_connection(path)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let bound: Option<HostBindingRow> = tx.query_row(
+        "SELECT cwd, host_id, ssh_port, ssh_identity_file FROM sessions WHERE session_id = ?1 AND agent_runtime = 'nac' AND behavior = 'orchestrator' AND sandbox_json IS NULL",
+        params![session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).optional()?;
+    let Some((cwd, host, port, identity)) = bound else {
+        return Err(anyhow!(
+            "only unsandboxed NAC orchestrator sessions can trust Claude workers"
+        ));
+    };
+    let binding = claude_worker_trust_binding(&cwd, host.as_deref(), port, identity.as_deref())?;
+    let changed = tx.execute("UPDATE sessions SET claude_worker_trusted_workspace = 1, claude_worker_trust_binding_json = ?2 WHERE session_id = ?1", params![session_id, binding])?;
+    if changed == 0 {
+        return Err(anyhow!(
+            "only NAC orchestrator sessions can trust Claude workers"
+        ));
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn claude_worker_trust_binding(
+    cwd: &str,
+    host: Option<&str>,
+    port: Option<u16>,
+    identity: Option<&str>,
+) -> Result<String> {
+    serde_json::to_string(&(cwd, host, port, identity))
+        .context("failed to encode Claude worker trust binding")
+}
+
 pub fn load_session(path: &Path, session_id: &str) -> Result<SessionSnapshot> {
     let conn = crate::store::open_connection(path)?;
     let row = conn
@@ -383,7 +517,8 @@ pub fn load_session(path: &Path, session_id: &str) -> Result<SessionSnapshot> {
                     s.created_at, s.updated_at, s.host_id, s.api_key_env,
                     s.extra_headers_json, s.token_usages_json, s.config_version,
                     s.orchestrator_compaction_threshold, s.ssh_port,
-                    s.ssh_identity_file, s.light_model_json, sp.project_id, s.behavior
+                    s.ssh_identity_file, s.light_model_json, sp.project_id, s.behavior,
+                    s.agent_runtime, s.claude_agent_json, s.claude_native_session_id, s.claude_worker_trusted_workspace, s.claude_worker_trust_binding_json
              FROM sessions s
              LEFT JOIN session_projects sp ON sp.session_id = s.session_id
              WHERE s.session_id = ?1",
@@ -697,7 +832,8 @@ pub fn load_last_session(path: &Path) -> Result<SessionSnapshot> {
                     s.created_at, s.updated_at, s.host_id, s.api_key_env,
                     s.extra_headers_json, s.token_usages_json, s.config_version,
                     s.orchestrator_compaction_threshold, s.ssh_port,
-                    s.ssh_identity_file, s.light_model_json, sp.project_id, s.behavior
+                    s.ssh_identity_file, s.light_model_json, sp.project_id, s.behavior,
+                    s.agent_runtime, s.claude_agent_json, s.claude_native_session_id, s.claude_worker_trusted_workspace, s.claude_worker_trust_binding_json
              FROM sessions s
              LEFT JOIN session_projects sp ON sp.session_id = s.session_id
              ORDER BY s.updated_at DESC, s.created_at DESC
@@ -770,6 +906,11 @@ fn map_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         light_model_json: row.get(22)?,
         project_id: row.get(23)?,
         behavior: row.get(24)?,
+        agent_runtime: row.get(25)?,
+        claude_agent_json: row.get(26)?,
+        claude_native_session_id: row.get(27)?,
+        claude_worker_trusted_workspace: row.get(28)?,
+        claude_worker_trust_binding_json: row.get(29)?,
     })
 }
 
@@ -1013,7 +1154,7 @@ SELECT s.session_id, s.cwd, s.model, s.backend, s.reasoning_effort,
        s.token_usages_json, COALESCE(s.run_count, 0), s.ssh_port, s.ssh_identity_file,
        sp.project_id, s.behavior,
        fsrc.source_session_id, fsrc.source_title, origin_p.title,
-       origin_s.last_user_prompt, origin_s.session_id
+       origin_s.last_user_prompt, origin_s.session_id, s.agent_runtime, s.claude_worker_trusted_workspace, s.claude_worker_trust_binding_json
 FROM sessions s
 LEFT JOIN session_presentations p ON p.session_id = s.session_id
 LEFT JOIN session_projects sp ON sp.session_id = s.session_id
@@ -1096,6 +1237,9 @@ fn map_session_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionS
         fork_origin_title: row.get(24)?,
         fork_origin_prompt: row.get(25)?,
         fork_origin_session_id: row.get(26)?,
+        agent_runtime: row.get(27)?,
+        claude_worker_trusted_workspace: row.get(28)?,
+        claude_worker_trust_binding_json: row.get(29)?,
     })
 }
 
@@ -1127,10 +1271,24 @@ struct SessionSummaryRow {
     fork_origin_title: Option<String>,
     fork_origin_prompt: Option<String>,
     fork_origin_session_id: Option<String>,
+    agent_runtime: String,
+    claude_worker_trusted_workspace: bool,
+    claude_worker_trust_binding_json: Option<String>,
 }
 
 impl SessionSummaryRow {
     fn into_summary(self) -> Result<SessionSummary> {
+        let claude_worker_trusted_workspace = self.claude_worker_trusted_workspace
+            && self.claude_worker_trust_binding_json.as_deref()
+                == Some(
+                    claude_worker_trust_binding(
+                        &self.cwd,
+                        self.ssh_host.as_deref(),
+                        self.ssh_port,
+                        self.ssh_identity_file.as_deref(),
+                    )?
+                    .as_str(),
+                );
         let diagnostics = model_config_diagnostics(
             self.backend_raw.as_deref(),
             self.reasoning_effort_raw.as_deref(),
@@ -1165,6 +1323,8 @@ impl SessionSummaryRow {
         Ok(SessionSummary {
             session_id: self.session_id,
             behavior: self.behavior.parse()?,
+            agent_runtime: self.agent_runtime.parse()?,
+            claude_worker_trusted_workspace,
             project_id: self.project_id,
             cwd,
             workspace_host_path,
@@ -1200,6 +1360,48 @@ pub(crate) fn insert_or_replace_session(
     path: &Path,
     snapshot: &SessionSnapshot,
 ) -> Result<()> {
+    type StoredRuntimeBinding = (
+        String,
+        String,
+        Option<String>,
+        Option<u16>,
+        Option<String>,
+        Option<String>,
+    );
+    validate_agent_runtime(snapshot)?;
+    let existing: Option<StoredRuntimeBinding> = tx.query_row(
+        "SELECT agent_runtime, cwd, host_id, ssh_port, ssh_identity_file, claude_agent_json FROM sessions WHERE session_id = ?1",
+        params![snapshot.session_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+    ).optional()?;
+    if let Some((runtime, cwd, host, port, identity, config_json)) = existing {
+        if runtime != snapshot.agent_runtime.as_str() {
+            return Err(anyhow!("session agent runtime is immutable"));
+        }
+        if snapshot.agent_runtime == AgentRuntime::ClaudeAgent {
+            let mut persisted: ClaudeAgentSession = serde_json::from_str(
+                config_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("stored Claude Agent settings are missing"))?,
+            )?;
+            let mut incoming = snapshot
+                .claude_agent
+                .clone()
+                .ok_or_else(|| anyhow!("Claude Agent settings are missing"))?;
+            persisted.native_session_id = None;
+            incoming.native_session_id = None;
+            if cwd != snapshot.cwd.display().to_string()
+                || host != stored_ssh_host(snapshot.ssh.as_ref())
+                || port != stored_ssh_port(snapshot.ssh.as_ref())
+                || identity != stored_ssh_identity_file(snapshot.ssh.as_ref())
+                || persisted != incoming
+            {
+                return Err(anyhow!(
+                    "Claude Agent host, workspace, or configuration binding is immutable"
+                ));
+            }
+        }
+    }
     let sandbox_json = snapshot
         .sandbox_spec
         .as_ref()
@@ -1251,10 +1453,10 @@ pub(crate) fn insert_or_replace_session(
              response_durations_ms_json, created_at, updated_at, host_id, api_key_env,
              extra_headers_json, token_usages_json, config_version,
              orchestrator_compaction_threshold, ssh_port, ssh_identity_file,
-             light_model_json, behavior
+             light_model_json, behavior, agent_runtime, claude_agent_json, claude_native_session_id
          ) VALUES (
              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-             ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
+             ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
          )
          ON CONFLICT(session_id) DO UPDATE SET
              cwd = excluded.cwd,
@@ -1301,6 +1503,9 @@ pub(crate) fn insert_or_replace_session(
             stored_ssh_identity_file(snapshot.ssh.as_ref()),
             light_model_json,
             snapshot.behavior.as_str(),
+            snapshot.agent_runtime.as_str(),
+            snapshot.claude_agent.as_ref().map(serde_json::to_string).transpose()?,
+            snapshot.claude_agent.as_ref().and_then(|config| config.native_session_id.as_deref()),
         ],
     )?;
     Ok(())
@@ -1332,6 +1537,11 @@ struct SessionRow {
     ssh_identity_file: Option<String>,
     light_model_json: Option<String>,
     behavior: String,
+    agent_runtime: String,
+    claude_agent_json: Option<String>,
+    claude_native_session_id: Option<String>,
+    claude_worker_trusted_workspace: bool,
+    claude_worker_trust_binding_json: Option<String>,
 }
 
 impl SessionRow {
@@ -1353,6 +1563,29 @@ impl SessionRow {
         Ok(SessionSnapshot {
             session_id: self.session_id,
             behavior: self.behavior.parse()?,
+            agent_runtime: self.agent_runtime.parse()?,
+            claude_agent: self
+                .claude_agent_json
+                .map(|json| {
+                    serde_json::from_str::<ClaudeAgentSession>(&json)
+                        .context("failed to parse stored Claude Agent settings")
+                        .map(|mut config| {
+                            config.native_session_id = self.claude_native_session_id;
+                            config
+                        })
+                })
+                .transpose()?,
+            claude_worker_trusted_workspace: self.claude_worker_trusted_workspace
+                && self.claude_worker_trust_binding_json.as_deref()
+                    == Some(
+                        claude_worker_trust_binding(
+                            &self.cwd,
+                            self.ssh_host.as_deref(),
+                            self.ssh_port,
+                            self.ssh_identity_file.as_deref(),
+                        )?
+                        .as_str(),
+                    ),
             project_id: self.project_id,
             cwd: PathBuf::from(self.cwd),
             model: self.model,

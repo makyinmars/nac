@@ -72,6 +72,11 @@ pub fn validate_model_reasoning_effort(
     model: &str,
     reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<()> {
+    if backend == BackendKind::ClaudeAgent {
+        return Err(model_configuration_error(
+            "invalid model configuration: 'claude-agent' is a separate agent runtime, not a model backend",
+        ));
+    }
     let resolved = catalog::resolve(backend, model);
     validate_model_reasoning_effort_with_map(
         backend,
@@ -108,6 +113,11 @@ pub(crate) fn validate_model_reasoning_effort_with_map(
 }
 
 pub fn validate_backend_api_key_env(backend: BackendKind, api_key_env: Option<&str>) -> Result<()> {
+    if backend == BackendKind::ClaudeAgent {
+        return Err(model_configuration_error(
+            "invalid model configuration: 'claude-agent' is a separate agent runtime, not a model backend",
+        ));
+    }
     if api_key_backend(backend) {
         let Some(name) = api_key_env else {
             // Guided error: name the provider's conventional credential

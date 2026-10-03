@@ -116,6 +116,7 @@ export function CatalogModelPicker({
   compact = false,
   liveByBackend,
   value,
+  onOpenChange,
   onSelect,
 }: {
   catalog: ModelCatalog | undefined;
@@ -127,6 +128,7 @@ export function CatalogModelPicker({
   compact?: boolean;
   liveByBackend: Map<BackendKind, ProviderModel[] | null>;
   value: CatalogPick | null;
+  onOpenChange?: (open: boolean) => void;
   onSelect: (pick: CatalogPick) => void;
 }) {
   const isMobile = useIsMobile();
@@ -180,6 +182,7 @@ export function CatalogModelPicker({
   // stale highlight of either kind would light a row on the way back in.
   const close = () => {
     setOpen(false);
+    onOpenChange?.(false);
     setActive(null);
     setHovered(null);
   };
@@ -190,7 +193,7 @@ export function CatalogModelPicker({
       model: row.model.id,
       baseUrl: catalogBaseUrl(row.provider),
     });
-    setOpen(false);
+    close();
     search("");
   };
 
@@ -323,7 +326,13 @@ export function CatalogModelPicker({
         size={compact ? ButtonSize.Small : isMobile ? ButtonSize.Large : ButtonSize.Medium}
         content={compact ? ButtonContent.IconLeft : ButtonContent.IconRight}
         disabled={!catalog || disabled}
-        onClick={() => (open ? close() : setOpen(true))}
+        onClick={() => {
+          if (open) close();
+          else {
+            setOpen(true);
+            onOpenChange?.(true);
+          }
+        }}
         aria-expanded={open}
         aria-label={compact ? "Model" : undefined}
         className={compact ? "max-w-[190px]" : "w-full md:w-[280px]"}

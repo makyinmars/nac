@@ -471,6 +471,7 @@ pub(crate) fn test_runtime() -> ToolRuntime {
         light_client: None,
         allowed_tools: None,
         permission_broker: None,
+        claude_approval_broker: None,
         goal_runtime: None,
         command_environment: None,
         web_credential: None,

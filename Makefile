@@ -4,6 +4,7 @@ CARGO ?= cargo
 PKG := nac-server
 BIN := nac-web
 WEB_DIR := crates/$(PKG)/web
+CLAUDE_BRIDGE_DIR := crates/nac-core/claude_bridge
 RELEASE_TEST_DIR := .github/scripts
 MANAGED_IMAGE ?= nac-managed:local
 
@@ -37,6 +38,7 @@ setup:
 	}
 	$(CARGO) fetch --locked
 	npm --prefix $(RELEASE_TEST_DIR) ci
+	npm --prefix $(CLAUDE_BRIDGE_DIR) ci
 	npm --prefix $(WEB_DIR) ci
 	npm --prefix $(WEB_DIR) exec -- playwright install chromium
 

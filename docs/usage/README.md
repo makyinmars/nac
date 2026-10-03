@@ -7,6 +7,7 @@ durable direct-session work.
 - [Skills](skills.md)
 - [Sandbox](sandbox.md)
 - [Session behaviors](session-behaviors.md)
+- [Claude Agent on a personal NAC installation](claude-agent.md)
 - [Direct-session permissions](permissions.md)
 - [Durable direct goals](direct-goals.md)
 - [Traditional child sessions](traditional-children.md)

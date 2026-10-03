@@ -5,6 +5,46 @@ use super::*;
 use crate::TEST_ENV_LOCK;
 
 #[test]
+fn claude_agent_marker_round_trips_but_cannot_configure_a_model_client() {
+    let backend: BackendKind = "claude-agent".parse().unwrap();
+    assert_eq!(backend, BackendKind::ClaudeAgent);
+    assert_eq!(serde_json::to_string(&backend).unwrap(), "\"claude-agent\"");
+    assert_eq!(
+        serde_json::from_str::<BackendKind>("\"claude-agent\"").unwrap(),
+        backend
+    );
+    assert_eq!(provider_default_base_url(backend), None);
+    assert!(!provider_uses_api_key(backend));
+
+    let error = EffectiveModelSettings::from_optional(
+        Some(backend),
+        Some("claude-sonnet".to_string()),
+        Some("https://api.anthropic.com".to_string()),
+        None,
+        None,
+        Default::default(),
+    )
+    .unwrap_err();
+    assert!(error.downcast_ref::<ModelConfigurationError>().is_some());
+    assert!(error.to_string().contains("separate agent runtime"));
+
+    let error = ModelClient::from_effective_settings(EffectiveModelSettings {
+        backend,
+        model: "claude-sonnet".to_string(),
+        base_url: "https://api.anthropic.com".to_string(),
+        allow_insecure_http: false,
+        reasoning_effort: None,
+        api_key_env: None,
+        trusted_api_key_file: None,
+        extra_headers: Default::default(),
+        resolved: catalog::resolve(BackendKind::AnthropicMessages, "claude-sonnet"),
+    })
+    .unwrap_err();
+    assert!(error.downcast_ref::<ModelConfigurationError>().is_some());
+    assert!(error.to_string().contains("separate agent runtime"));
+}
+
+#[test]
 fn api_key_backends_validate_selectors_and_auto_select_the_conventional_var() {
     let _guard = TEST_ENV_LOCK.lock().unwrap();
     let names = [

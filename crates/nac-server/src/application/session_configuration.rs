@@ -53,6 +53,14 @@ impl<'a> SessionConfigurationApplication<'a> {
         Self { manager }
     }
 
+    /// Explicitly trusts this parent's pinned workspace for future Claude workers.
+    pub(crate) async fn trust_claude_worker_workspace(&self, session_id: &str) -> Result<()> {
+        self.manager.require_primary_operation_session(session_id)?;
+        let gate = self.manager.lifecycle_gate(session_id);
+        let _lifecycle = gate.lock().await;
+        sessions::trust_claude_worker_workspace(&self.manager.inner.store_path, session_id)
+    }
+
     /// Transactionally updates persisted model settings for an inactive session.
     /// The prospective snapshot and credentials are fully validated before the
     /// database or in-memory service map is changed.
@@ -103,6 +111,20 @@ impl<'a> SessionConfigurationApplication<'a> {
             session_id,
         )?;
         self.manager.require_primary_operation_session(session_id)?;
+
+        // Summaries tolerate malformed legacy model settings so a PATCH can
+        // still repair them. Loading the full snapshot here would turn that
+        // existing repair path into a 500 before validation runs.
+        let agent_runtime = sessions::list_sessions(&self.manager.inner.store_path)?
+            .into_iter()
+            .find(|session| session.session_id == session_id)
+            .ok_or_else(|| anyhow!("session '{session_id}' was not found"))?
+            .agent_runtime;
+        if agent_runtime == sessions::AgentRuntime::ClaudeAgent {
+            return Err(anyhow!(
+                "invalid request: NAC model settings cannot be changed for a Claude Agent session"
+            ));
+        }
 
         let behavior = sessions::load_session_behavior(&self.manager.inner.store_path, session_id)?;
         let current = sessions::load_session_config(&self.manager.inner.store_path, session_id)?;

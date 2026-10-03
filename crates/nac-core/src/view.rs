@@ -31,6 +31,10 @@ pub struct SessionSummarySnapshot {
     pub session_id: String,
     #[serde(default)]
     pub behavior: sessions::SessionBehavior,
+    #[serde(default)]
+    pub agent_runtime: sessions::AgentRuntime,
+    #[serde(default)]
+    pub claude_worker_trusted_workspace: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     #[cfg_attr(feature = "openapi", schema(value_type = String))]
@@ -88,6 +92,8 @@ pub struct SessionSummarySnapshot {
 pub struct ThreadSnapshot {
     pub name: String,
     pub session_id: String,
+    #[serde(default)]
+    pub agent: store::ThreadAgent,
     pub created_at: String,
     pub updated_at: String,
     pub episode_count: i64,
@@ -219,6 +225,8 @@ impl From<sessions::SessionSummary> for SessionSummarySnapshot {
         Self {
             session_id: summary.session_id,
             behavior: summary.behavior,
+            agent_runtime: summary.agent_runtime,
+            claude_worker_trusted_workspace: summary.claude_worker_trusted_workspace,
             project_id: summary.project_id,
             cwd: summary.cwd,
             workspace_host_path: summary.workspace_host_path,
@@ -258,6 +266,7 @@ impl From<store::ThreadRecord> for ThreadSnapshot {
         Self {
             name: thread.name,
             session_id: thread.session_id,
+            agent: thread.agent,
             created_at: thread.created_at,
             updated_at: thread.updated_at,
             episode_count: thread.episode_count,

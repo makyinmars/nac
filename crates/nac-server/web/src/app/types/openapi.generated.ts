@@ -29,6 +29,7 @@ export interface components {
           call_id: string;
           key_arg_preview?: string | null;
           name: string;
+          parent_call_id?: string | null;
           thread_name?: string | null;
           type: "tool_call_started";
         }
@@ -43,6 +44,7 @@ export interface components {
           exit_code?: number | null;
           is_error: boolean;
           name: string;
+          parent_call_id?: string | null;
           remote_outcome_uncertain?: boolean;
           thread_name?: string | null;
           type: "tool_call_finished";
@@ -119,6 +121,7 @@ export interface components {
         }
       | { message: string; thread_name?: string | null; type: "model_error" }
       | { thread_name?: string | null; type: "run_finished" };
+    AgentRuntime: "nac" | "claude-agent";
     ApiErrorBody: { error: string };
     AssignSessionRequest: { session_id: string };
     AssistantStreamDelta: {
@@ -138,7 +141,8 @@ export interface components {
       | "chatgpt-codex-responses"
       | "anthropic-messages"
       | "arcee-auth"
-      | "arcee-api";
+      | "arcee-api"
+      | "claude-agent";
     Branch: { is_current: boolean; name: string };
     BranchList: {
       branches: components["schemas"]["Branch"][];
@@ -160,6 +164,30 @@ export interface components {
       deletions?: number | null;
       path: string;
       status: string;
+    };
+    ClaudeAgentSession: {
+      config_dir?: string | null;
+      executable: string;
+      model?: string | null;
+      native_session_id?: string | null;
+      trusted_workspace: boolean;
+    };
+    ClaudePermissionReply: "allow_once" | "deny";
+    ClaudePermissionRequest: {
+      claude_request_id: string;
+      created_at_epoch_ms: number;
+      generation: number;
+      id: string;
+      input_preview: string;
+      run_id: string;
+      session_id: string;
+      tool_name: string;
+    };
+    ClaudeStatusResponse: {
+      authenticated: boolean;
+      available: boolean;
+      reason?: string | null;
+      version?: string | null;
     };
     ClearGoalRequest: { expected_version: number };
     CommandStatus: "completed" | "timed_out" | "cancelled" | "spawn_error";
@@ -228,11 +256,16 @@ export interface components {
       ssh_port?: number | null;
     };
     CreateSessionRequest: {
+      agent_runtime?: components["schemas"]["AgentRuntime"];
       allow_insecure_http?: components["schemas"]["RequestField_bool_bool"];
       api_key_env?: components["schemas"]["RequestField_String_String"];
       backend?: components["schemas"]["RequestField_String_String"];
       base_url?: components["schemas"]["RequestField_String_String"];
       behavior?: components["schemas"]["SessionBehavior"];
+      claude_config_dir?: string | null;
+      claude_executable?: string | null;
+      claude_model?: string | null;
+      claude_trusted_workspace?: boolean;
       cwd?: string | null;
       extra_headers?: components["schemas"]["RequestField_HeadersRequest_HeadersRequest"];
       first_chat?: boolean;
@@ -726,6 +759,11 @@ export interface components {
     };
     ReplayBoundaryEvent: { epoch_id: string; replay_boundary_sequence_id: number };
     ReplayGapEvent: { replay_gap: components["schemas"]["SessionReplayGap"] };
+    ReplyClaudePermissionRequest: {
+      generation: number;
+      reply: components["schemas"]["ClaudePermissionReply"];
+      run_id: string;
+    };
     ReplyPermissionRequest: { reply: components["schemas"]["PermissionReply"] };
     RequestField_BackendKind_BackendKind:
       | null
@@ -739,6 +777,7 @@ export interface components {
           | "anthropic-messages"
           | "arcee-auth"
           | "arcee-api"
+          | "claude-agent"
         );
     RequestField_bool_bool: null | boolean;
     RequestField_BTreeMap_BTreeMap_String_Option_String: null | Record<string, null | string>;
@@ -854,6 +893,16 @@ export interface components {
         }
       | { reason: string; request_id: string; type: "permission_dismissed" }
       | {
+          request: components["schemas"]["ClaudePermissionRequest"];
+          type: "claude_permission_asked";
+        }
+      | {
+          reply: components["schemas"]["ClaudePermissionReply"];
+          request_id: string;
+          type: "claude_permission_replied";
+        }
+      | { reason: string; request_id: string; type: "claude_permission_dismissed" }
+      | {
           mode: components["schemas"]["PermissionApprovalMode"];
           type: "permission_approval_mode_changed";
         }
@@ -880,6 +929,7 @@ export interface components {
       active_compaction?: null | components["schemas"]["ActiveCompactionSnapshot"];
       active_run?: null | components["schemas"]["ActiveRunSnapshot"];
       active_threads?: string[];
+      claude_agent?: null | components["schemas"]["ClaudeAgentSession"];
       covered_orchestrator_steering_ids?: number[];
       forks?: components["schemas"]["SessionForkLink"][];
       message_created_at?: (string | null)[];
@@ -926,6 +976,7 @@ export interface components {
       root_session_id: string;
     };
     SessionMetadata: {
+      agent_runtime?: components["schemas"]["AgentRuntime"];
       agents_md_status: string;
       api_key_env?: string | null;
       backend: string;
@@ -949,8 +1000,10 @@ export interface components {
       message_page?: null | components["schemas"]["MessagePageMetadata"];
     };
     SessionSummarySnapshot: {
+      agent_runtime?: components["schemas"]["AgentRuntime"];
       backend: string;
       behavior?: components["schemas"]["SessionBehavior"];
+      claude_worker_trusted_workspace?: boolean;
       created_at: string;
       cwd: string;
       forked_from?: null | components["schemas"]["SessionForkOrigin"];
@@ -1043,6 +1096,7 @@ export interface components {
       url?: string | null;
     };
     TestMcpServerResponse: { tools: components["schemas"]["McpProbedTool"][] };
+    ThreadAgent: "nac" | "claude";
     ThreadEventDecodeDiagnostic: {
       created_at: string;
       error: string;
@@ -1062,6 +1116,7 @@ export interface components {
       id: number;
     };
     ThreadSnapshot: {
+      agent?: components["schemas"]["ThreadAgent"];
       created_at: string;
       episode_count: number;
       latest_action: string | null;

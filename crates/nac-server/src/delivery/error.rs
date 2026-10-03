@@ -260,6 +260,8 @@ impl From<anyhow::Error> for ApiError {
             || message.contains("delegated sessions accept")
             || message.contains("already has running generation")
             || message.contains("already has a running generation")
+            || message.contains("Claude approval request")
+            || message.contains("Claude approval waiter")
             || message.contains("running in another process")
             || message.contains("previous nac service instance")
         {
@@ -283,6 +285,8 @@ impl From<anyhow::Error> for ApiError {
             || message.contains("frontend command")
             || message.contains("traditional child sessions cannot own autonomous goals")
             || message.contains("only for direct behaviors")
+            || message.contains("only unsandboxed NAC orchestrator sessions")
+            || message.contains("only NAC orchestrator sessions")
         {
             StatusCode::BAD_REQUEST
         } else {

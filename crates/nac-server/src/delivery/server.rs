@@ -391,6 +391,8 @@ async fn secure_docs(request: axum::extract::Request, next: Next) -> Response {
         ReplayBoundaryEvent,
         ReplayGapEvent,
         SessionEventEnvelope,
+        nac_core::claude_approval::ClaudePermissionRequest,
+        nac_core::claude_approval::ClaudePermissionReply,
         AssistantStreamDelta,
         LaggedEvent
     ))
@@ -545,6 +547,7 @@ fn documented_api() -> OpenApiRouter<SessionManager> {
             delivery::credentials::delete_handler
         ))
         .routes(routes!(launch_model_defaults_handler))
+        .routes(routes!(delivery::session_lifecycle::claude_status_handler))
         .routes(routes!(models_handler))
         .routes(routes!(commands_handler))
         .routes(routes!(
@@ -609,6 +612,15 @@ fn documented_api() -> OpenApiRouter<SessionManager> {
             delivery::session_lifecycle::update_config_handler
         ))
         .routes(routes!(delivery::session_lifecycle::session_skills_handler))
+        .routes(routes!(
+            delivery::session_lifecycle::trust_claude_worker_workspace_handler
+        ))
+        .routes(routes!(
+            delivery::session_lifecycle::claude_permissions_handler
+        ))
+        .routes(routes!(
+            delivery::session_lifecycle::reply_claude_permission_handler
+        ))
         .routes(routes!(delivery::session_runs::submit_prompt))
         .routes(routes!(compaction::handler))
         .routes(routes!(revert::handler))

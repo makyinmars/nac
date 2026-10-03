@@ -289,3 +289,75 @@ it("sends an explicitly selected preset's compaction threshold instead of inheri
     client.clear();
   }
 });
+
+it("creates a Claude chat with direct behavior and no inherited NAC model", async () => {
+  vi.spyOn(api, "getClaudeStatus").mockResolvedValue({
+    available: true,
+    authenticated: true,
+    version: "2.1",
+  });
+  const create = vi.spyOn(api, "createSession").mockResolvedValue({
+    metadata: { session_id: "claude-chat" },
+  } as SessionSnapshotResponse);
+  const { client, view } = renderModal();
+  try {
+    fireEvent.click(screen.getByRole("radio", { name: /^Claude Agent / }));
+    expect(screen.queryByText(/Primary model:/)).toBeNull();
+    expect(screen.queryByRole("radio", { name: /^Direct coding agent / })).toBeNull();
+    expect(
+      await screen.findByText(/Claude user, project, and local settings are disabled here/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/load Claude Code project hooks/)).toBeNull();
+    const submit = screen.getByRole("button", { name: "Create chat" });
+    expect(submit.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(await screen.findByRole("checkbox", { name: /I trust this workspace/ }));
+    fireEvent.click(submit);
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0]?.[0]).toEqual({
+      project_id: "project",
+      behavior: "direct",
+      first_chat: false,
+      agent_runtime: "claude-agent",
+      claude_executable: "claude",
+      claude_model: null,
+      claude_config_dir: null,
+      claude_trusted_workspace: true,
+    });
+  } finally {
+    view.unmount();
+    client.clear();
+  }
+});
+
+it("checks Claude Code on the project's SSH host", async () => {
+  vi.mocked(api.listProjects).mockResolvedValue({
+    projects: [
+      {
+        ...project,
+        ssh_host: "builder.example",
+        ssh_port: 2222,
+        ssh_identity_file: "/keys/builder",
+      },
+    ],
+  });
+  const status = vi.spyOn(api, "getClaudeStatus").mockResolvedValue({
+    available: true,
+    authenticated: true,
+    version: "2.1",
+  });
+  const { client, view } = renderModal();
+  try {
+    fireEvent.click(screen.getByRole("radio", { name: /^Claude Agent / }));
+    await waitFor(() =>
+      expect(status).toHaveBeenCalledWith(
+        { ssh_host: "builder.example", ssh_port: 2222, ssh_identity_file: "/keys/builder" },
+        "claude",
+        "",
+        expect.any(AbortSignal),
+      ),
+    );
+  } finally {
+    view.unmount();
+    client.clear();
+  }
+});

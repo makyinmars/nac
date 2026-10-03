@@ -4,6 +4,8 @@ use std::sync::Mutex;
 mod agent;
 mod agents_md;
 pub mod browser;
+pub mod claude_agent;
+pub mod claude_approval;
 pub mod commands;
 pub mod events;
 mod goals;

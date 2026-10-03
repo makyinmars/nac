@@ -208,6 +208,9 @@ impl SessionService {
     /// responsible for holding the session's operation lease, so that no run is
     /// writing to the transcript or the checkout while it happens.
     pub async fn revert_to_message(&self, message_idx: usize) -> Result<RevertOutcome> {
+        if self.claude_engine().is_some() {
+            anyhow::bail!("Claude Agent native context cannot be rewound by NAC transcript revert");
+        }
         let session_id =
             self.metadata.session_id.clone().ok_or_else(|| {
                 anyhow::anyhow!("this session is not persisted, so it cannot revert")
@@ -290,7 +293,11 @@ impl SessionService {
 
         let kept = &messages[..message_idx];
         {
-            let mut agent = self.agent.lock().await;
+            let mut agent = self
+                .nac_agent()
+                .ok_or_else(|| anyhow::anyhow!("NAC agent is unavailable"))?
+                .lock()
+                .await;
             agent.messages.truncate(message_idx);
         }
         {

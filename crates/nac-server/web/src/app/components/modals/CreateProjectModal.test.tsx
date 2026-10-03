@@ -174,3 +174,34 @@ it("sends explicit null when the first chat changes a saved Dual preset to Singl
     client.clear();
   }
 });
+
+it("creates a Claude first chat without saving or sending NAC model configuration", async () => {
+  const saveModel = vi.spyOn(api, "createModelConfig");
+  vi.spyOn(api, "getClaudeStatus").mockResolvedValue({
+    available: true,
+    authenticated: true,
+    version: "2.1",
+  });
+  const { client, view } = renderModal();
+  try {
+    fireEvent.click(screen.getByRole("radio", { name: /^Claude Agent / }));
+    expect(screen.queryByText("Light model")).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: /I trust this workspace/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Project" }));
+    await waitFor(() => expect(api.createSession).toHaveBeenCalled());
+    expect(vi.mocked(api.createSession).mock.calls[0]?.[0]).toEqual({
+      behavior: "direct",
+      agent_runtime: "claude-agent",
+      first_chat: true,
+      project_id: "created-project",
+      claude_executable: "claude",
+      claude_model: null,
+      claude_config_dir: null,
+      claude_trusted_workspace: true,
+    });
+    expect(saveModel).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    client.clear();
+  }
+});

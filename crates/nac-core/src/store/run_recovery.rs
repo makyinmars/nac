@@ -508,18 +508,22 @@ fn canonical_terminal_disposition(
         } = message
         {
             if tool_calls.as_ref().is_none_or(Vec::is_empty) {
-                disposition = Some(if content == crate::agent::RUN_CANCELLED_MARKER {
-                    RecoveredRunTerminal::Cancelled
-                } else if content == crate::agent::RUN_FAILED_PARTIAL_MARKER
-                    || content
-                        .ends_with(&format!("\n\n{}", crate::agent::RUN_FAILED_PARTIAL_MARKER))
-                {
-                    RecoveredRunTerminal::Failed
-                } else if !content.trim().is_empty() {
-                    RecoveredRunTerminal::Completed
-                } else {
-                    continue;
-                });
+                disposition = Some(
+                    if content == crate::agent::RUN_CANCELLED_MARKER
+                        || content.ends_with(&format!("\n\n{}", crate::agent::RUN_CANCELLED_MARKER))
+                    {
+                        RecoveredRunTerminal::Cancelled
+                    } else if content == crate::agent::RUN_FAILED_PARTIAL_MARKER
+                        || content
+                            .ends_with(&format!("\n\n{}", crate::agent::RUN_FAILED_PARTIAL_MARKER))
+                    {
+                        RecoveredRunTerminal::Failed
+                    } else if !content.trim().is_empty() {
+                        RecoveredRunTerminal::Completed
+                    } else {
+                        continue;
+                    },
+                );
             }
         }
     }

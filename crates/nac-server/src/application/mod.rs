@@ -1,3 +1,4 @@
+pub(crate) mod claude;
 pub(crate) mod credentials;
 pub(crate) mod delegation;
 pub(crate) mod managed;

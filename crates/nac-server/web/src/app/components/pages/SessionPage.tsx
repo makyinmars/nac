@@ -316,6 +316,7 @@ export default function SessionPage() {
 
         <SessionIdentity
           behavior={entry?.summary.behavior ?? snapshot?.metadata.behavior ?? null}
+          runtime={entry?.summary.agent_runtime ?? snapshot?.metadata.agent_runtime ?? "nac"}
           lineage={snapshot?.lineage ?? null}
         />
 

@@ -18,9 +18,14 @@ pub enum BackendKind {
     AnthropicMessages,
     ArceeAuth,
     ArceeApi,
+    /// Durable marker for sessions driven by the separate Claude Agent runtime.
+    /// This is never a NAC model provider.
+    ClaudeAgent,
 }
 
 impl BackendKind {
+    /// The nine actual model providers. The Claude Agent marker is stored in
+    /// legacy backend columns but is not valid model configuration.
     pub const SUPPORTED: &'static str = "deepseek-chat, fireworks-chat, together-chat, openai-responses, openai-chat-completions, chatgpt-codex-responses, anthropic-messages, arcee-auth, arcee-api";
 
     pub fn as_str(self) -> &'static str {
@@ -34,6 +39,7 @@ impl BackendKind {
             Self::AnthropicMessages => "anthropic-messages",
             Self::ArceeAuth => "arcee-auth",
             Self::ArceeApi => "arcee-api",
+            Self::ClaudeAgent => "claude-agent",
         }
     }
 
@@ -62,6 +68,7 @@ impl std::str::FromStr for BackendKind {
             "anthropic-messages" => Ok(Self::AnthropicMessages),
             "arcee-auth" => Ok(Self::ArceeAuth),
             "arcee-api" => Ok(Self::ArceeApi),
+            "claude-agent" => Ok(Self::ClaudeAgent),
             "arcee" => Err("unsupported backend 'arcee'; settings repair required: select 'arcee-auth' for managed arcee_auth.json credentials or 'arcee-api' for API-key credentials".to_string()),
             "auto" => Err(format!(
                 "unsupported backend 'auto'; settings repair required: select an explicit backend ({})",
@@ -216,6 +223,11 @@ pub fn resolve_model_base_url_with_policy(
     base_url: Option<String>,
     allow_insecure_http: bool,
 ) -> Result<String> {
+    if backend == BackendKind::ClaudeAgent {
+        return Err(model_configuration_error(
+            "invalid model configuration: 'claude-agent' is a separate agent runtime, not a model backend",
+        ));
+    }
     let base_url = base_url
         .or_else(|| catalog::default_base_url(backend))
         .or_else(|| managed_backend_base_url(backend).map(str::to_string));
@@ -289,6 +301,11 @@ impl EffectiveModelSettings {
                 "invalid model configuration: required setting 'backend' is missing; select a backend in the session settings or configure a model id the catalog knows",
             )
         })?;
+        if backend == BackendKind::ClaudeAgent {
+            return Err(model_configuration_error(
+                "invalid model configuration: 'claude-agent' is a separate agent runtime, not a model backend",
+            ));
+        }
         let model = required_nonblank_setting(model, "model")?;
         let base_url = resolve_model_base_url_with_policy(backend, base_url, allow_insecure_http)?;
         // Conventional-var auto-selection: an API-key backend with no

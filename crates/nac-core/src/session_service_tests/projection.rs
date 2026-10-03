@@ -9,6 +9,7 @@ async fn frontend_snapshot_projects_sanitized_primary_tool_events_separately() {
         .emit_agent(AgentEvent::ToolCallStarted {
             thread_name: None,
             call_id: "call-primary".to_string(),
+            parent_call_id: None,
             name: "exec_command".to_string(),
             args_preview: "RAW_ARGUMENTS_MUST_NOT_SURVIVE".to_string(),
             key_arg_preview: None,
@@ -27,6 +28,7 @@ async fn frontend_snapshot_projects_sanitized_primary_tool_events_separately() {
         .emit_agent(AgentEvent::ToolCallFinished {
             thread_name: None,
             call_id: "call-primary".to_string(),
+            parent_call_id: None,
             name: "exec_command".to_string(),
             content_preview: "primary result".to_string(),
             is_error: false,
@@ -372,7 +374,7 @@ async fn store_backed_pages_are_live_mid_run_while_the_agent_is_busy() {
         include_system: false,
     };
     let expected = page_messages(&persisted_messages, request);
-    let agent_guard = parts.service.agent.lock().await;
+    let agent_guard = parts.service.nac_agent().unwrap().lock().await;
 
     // The held agent lock is irrelevant: pages read the store (blob ++
     // log), never the agent vec, so they never wait for a run.
@@ -814,6 +816,7 @@ async fn frontend_snapshot_restores_persisted_thread_activity() {
         .emit_agent(AgentEvent::ToolCallStarted {
             thread_name: Some("impl/ui".to_string()),
             call_id: "call-1".to_string(),
+            parent_call_id: None,
             name: "read".to_string(),
             args_preview: r#"{"path":"index.html"}"#.to_string(),
             key_arg_preview: None,
@@ -825,6 +828,7 @@ async fn frontend_snapshot_restores_persisted_thread_activity() {
         .emit_agent(AgentEvent::ToolCallFinished {
             thread_name: Some("impl/ui".to_string()),
             call_id: "call-1".to_string(),
+            parent_call_id: None,
             name: "read".to_string(),
             content_preview: "done".to_string(),
             is_error: false,

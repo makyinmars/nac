@@ -8,9 +8,11 @@ import type { SessionBehavior, SessionLineage } from "@/app/types/api";
 
 export function SessionIdentity({
   behavior,
+  runtime = "nac",
   lineage,
 }: {
   behavior: SessionBehavior | null;
+  runtime?: "nac" | "claude-agent";
   lineage: SessionLineage | null;
 }) {
   const navigate = useNavigate();
@@ -50,6 +52,11 @@ export function SessionIdentity({
   return (
     <div className="flex min-h-9 w-full shrink-0 flex-wrap items-center gap-2 border-b border-border-primary bg-elevation-level-1 px-3 py-1.5">
       <span className="tag-label uppercase text-basic-tertiary">Immutable behavior</span>
+      {runtime === "claude-agent" ? (
+        <span className="rounded-full bg-elevation-level-3 px-2 py-1 text-xs font-medium text-basic-primary">
+          Claude Agent
+        </span>
+      ) : null}
       <span className="rounded-full bg-elevation-level-3 px-2 py-1 text-xs font-medium text-basic-primary">
         {presentation.label}
       </span>
@@ -66,7 +73,7 @@ export function SessionIdentity({
         <div className="flex basis-full flex-col gap-1 pb-1 text-xs text-basic-secondary">
           <span>{presentation.topLevel}</span>
           <span>{presentation.editing}</span>
-          <span>{presentation.delegation}</span>
+          {runtime === "claude-agent" ? null : <span>{presentation.delegation}</span>}
           <span className="text-basic-muted">{presentation.inspection}</span>
           <span className="text-basic-muted">
             This behavior cannot change. Start a new chat to choose another one.

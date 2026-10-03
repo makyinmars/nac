@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import {
   Button,
@@ -52,7 +53,8 @@ import { useSessionTitle } from "@/app/hooks/useSessionTitle";
 import { managedAuthLabel } from "@/app/lib/providers";
 import { humanErrorText, toRunError } from "@/app/lib/providerError";
 import { errorMessage, useToast } from "@/app/providers/ToastProvider";
-import { ApiError } from "@/app/services/api";
+import { api, ApiError } from "@/app/services/api";
+import { queryKeys } from "@/app/services/queries/keys";
 import {
   useManagedLogout,
   useManagedProviderModels,
@@ -189,6 +191,46 @@ export function SettingsModal({
 
   if (!mounted || !id) return null;
 
+  const runtime = entry?.summary.agent_runtime;
+  if (runtime === "claude-agent") {
+    const claude = snapshot?.claude_agent;
+    return (
+      <SettingsShell open={open} onClose={onClose}>
+        <div className="flex flex-col gap-4 text-small text-basic-primary">
+          <p>
+            <strong>Runtime:</strong> Claude Agent (fixed for this chat)
+          </p>
+          <p>
+            <strong>Execution host:</strong> {entry?.summary.ssh_host ?? "This machine"}
+          </p>
+          <p>
+            <strong>Workspace:</strong> {entry?.summary.cwd}
+          </p>
+          <p>
+            <strong>Executable:</strong> {claude?.executable ?? "claude"}
+          </p>
+          <p>
+            <strong>Model:</strong> {claude?.model || "Host default"}
+          </p>
+          <p>
+            <strong>CLAUDE_CONFIG_DIR:</strong> {claude?.config_dir || "Host default"}
+          </p>
+          <p>
+            <strong>Trusted workspace:</strong> {claude?.trusted_workspace ? "Yes" : "No"}
+          </p>
+          <p>
+            <strong>Claude session:</strong>{" "}
+            {claude?.native_session_id ?? "Starts with the first turn"}
+          </p>
+          <p className="text-basic-muted">
+            Claude Code approval requests appear separately from NAC native tool grants. Its native
+            transcripts stay on the execution host when this NAC chat is removed.
+          </p>
+        </div>
+      </SettingsShell>
+    );
+  }
+
   const meta = snapshot?.metadata;
   const storedHeaders = parseHeadersJson(config?.extra_headers_json);
   const initial = meta
@@ -253,11 +295,16 @@ function SettingsForm({
 }) {
   const isMobile = useIsMobile();
   const toast = useToast();
+  const queryClient = useQueryClient();
   const sessionTitle = useSessionTitle();
   const updateConfig = useUpdateConfig();
   const managedHostQuery = useManagedHostStatus();
   const managedHost = managedHostQuery.data ?? null;
   const createModelConfig = useCreateModelConfig();
+  const [workerWorkspaceTrusted, setWorkerWorkspaceTrusted] = useState(
+    Boolean(summary.claude_worker_trusted_workspace),
+  );
+  const [trustPending, setTrustPending] = useState(false);
   const [openingSummary] = useState(summary);
   const updatePresentation = useUpdatePresentation();
 
@@ -573,6 +620,44 @@ function SettingsForm({
       }
     >
       <div className="flex flex-col gap-6 [&>*]:shrink-0">
+        {summary.behavior === "orchestrator" ? (
+          <div className="rounded-[4px] border border-border-primary p-3 text-micro text-basic-secondary">
+            <div className="label-small mb-1 text-basic-primary">Claude worker workspace</div>
+            <p>Host: {summary.ssh_host ?? "This machine"}</p>
+            <p className="break-all">Folder: {summary.cwd}</p>
+            <p>
+              Claude Code can use approved file tools in this folder. User, project, and local
+              Claude settings are disabled, including their hooks and MCP servers. Native worker
+              transcripts remain on this host after NAC threads are deleted.
+            </p>
+            {workerWorkspaceTrusted ? (
+              <p className="mt-2">Trusted for Claude worker dispatches</p>
+            ) : (
+              <Button
+                variant={ButtonVariant.Secondary}
+                disabled={trustPending}
+                onClick={() => {
+                  setTrustPending(true);
+                  void api
+                    .trustClaudeWorkerWorkspace(id)
+                    .then(() => {
+                      setWorkerWorkspaceTrusted(true);
+                      void queryClient.invalidateQueries({ queryKey: queryKeys.sessionsAll });
+                      toast.success("Workspace trusted for Claude workers");
+                    })
+                    .catch((error: unknown) => {
+                      toast.error(
+                        `Unable to trust workspace: ${humanErrorText(toRunError(error))}`,
+                      );
+                    })
+                    .finally(() => setTrustPending(false));
+                }}
+              >
+                Trust workspace for Claude workers
+              </Button>
+            )}
+          </div>
+        ) : null}
         {diagnostics.length > 0 ? (
           <div className="rounded-[4px] border border-error-muted bg-error-tertiary p-3 text-micro text-error-primary">
             <div className="label-small mb-1">Repair required</div>

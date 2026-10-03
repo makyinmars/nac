@@ -20,6 +20,7 @@ export const API_PREFIXES = [
   "/health",
   "/store",
   "/sessions",
+  "/claude",
   "/projects",
   "/sandbox",
   "/auth",

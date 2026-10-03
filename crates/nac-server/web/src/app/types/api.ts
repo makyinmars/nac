@@ -15,6 +15,10 @@ export type DispatchWeight = "light" | "heavy";
 
 /** Immutable execution topology selected when a session is created. */
 export type SessionBehavior = ApiSchema<"SessionBehavior">;
+export type AgentRuntime = ApiSchema<"AgentRuntime">;
+export type ClaudeAgentSession = ApiSchema<"ClaudeAgentSession">;
+export type ClaudeStatusResponse = ApiSchema<"ClaudeStatusResponse">;
+export type ClaudePermissionRequest = ApiSchema<"ClaudePermissionRequest">;
 
 /**
  * The optional light worker model. Same shape on records and requests: the

@@ -640,7 +640,7 @@ pub(super) async fn seed_store_transcript(parts: &SessionServiceParts, messages:
         .as_mut()
         .unwrap()
         .messages = messages.clone();
-    parts.service.agent.lock().await.messages = messages.clone();
+    parts.service.nac_agent().unwrap().lock().await.messages = messages.clone();
     let connection =
         crate::store::open_runtime_connection(&parts.service.metadata.store_path).unwrap();
     connection
@@ -805,6 +805,8 @@ fn assert_run_started_event(
     }
 }
 
+#[path = "session_service_tests/claude.rs"]
+mod claude;
 #[path = "session_service_tests/direct_interaction.rs"]
 mod direct_interaction;
 #[path = "session_service_tests/projection.rs"]

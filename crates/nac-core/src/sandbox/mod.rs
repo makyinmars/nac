@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 mod backend;
 mod podman;
+pub(crate) use podman::{SANDBOX_EXEC_WRAPPER, SANDBOX_KILL_WRAPPER};
+pub(crate) use ssh::ssh_wrapper_script;
 pub(crate) mod session_worktree;
 mod ssh;
 mod ssh_browse;

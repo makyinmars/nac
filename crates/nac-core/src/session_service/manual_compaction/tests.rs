@@ -217,7 +217,7 @@ async fn manual_compaction_admission_coordinates_lease_and_config_revision() {
 #[tokio::test]
 async fn checkpoint_refresh_contention_does_not_establish_operation_or_retain_lease() {
     let (parts, store_path) = test_active_service("checkpoint_refresh_busy", "refresh-busy");
-    let agent = parts.service.agent.lock().await;
+    let agent = parts.service.nac_agent().unwrap().lock().await;
 
     assert!(matches!(
         parts
@@ -590,10 +590,17 @@ async fn manual_compaction_success_preserves_snapshot_and_emits_context_before_r
     let persisted_before = sessions::load_session(&store_path, "success-session").unwrap();
     let persisted_before_state = persisted_response_state(&store_path, "success-session");
     let messages_before = {
-        let agent = parts.service.agent.lock().await;
+        let agent = parts.service.nac_agent().unwrap().lock().await;
         serde_json::to_vec(&agent.messages).unwrap()
     };
-    let usage_before = parts.service.agent.lock().await.last_usage.clone();
+    let usage_before = parts
+        .service
+        .nac_agent()
+        .unwrap()
+        .lock()
+        .await
+        .last_usage
+        .clone();
     let steering = crate::store::queue_thread_steering(
         &store_path,
         "success-session",
@@ -678,7 +685,7 @@ async fn manual_compaction_success_preserves_snapshot_and_emits_context_before_r
     );
     let unattributed = snapshot_after.unattributed_token_usage.as_ref().unwrap();
     assert!(unattributed.orchestrator_context_tokens > 0);
-    let agent = parts.service.agent.lock().await;
+    let agent = parts.service.nac_agent().unwrap().lock().await;
     assert_eq!(
         serde_json::to_vec(&agent.messages).unwrap(),
         messages_before

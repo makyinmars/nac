@@ -12,13 +12,13 @@ use nac_core::{
     projects,
     runtime::{self, NacConfig, OptionalModelOption, RunOptions, StoreOptions},
     session_service::{SessionFrontendSnapshot, SessionService},
-    sessions::{self, SessionBehavior},
+    sessions::{self, AgentRuntime, SessionBehavior},
 };
 
 use crate::{
     create_compaction_threshold_override, light_model, model_options, nonblank,
-    request_configuration_error_from, sandbox_options, sandbox_requested, ResolvedLaunchLocation,
-    SessionManager, SshRequest,
+    request_configuration_error_from, sandbox_options, sandbox_requested, CreateSessionRequest,
+    ResolvedLaunchLocation, SessionManager, SshRequest,
 };
 
 use super::Field;
@@ -173,6 +173,11 @@ fn apply_sibling_model_defaults(
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionCreationCommand {
     pub(crate) behavior: SessionBehavior,
+    pub(crate) agent_runtime: AgentRuntime,
+    pub(crate) claude_executable: Option<String>,
+    pub(crate) claude_model: Option<String>,
+    pub(crate) claude_config_dir: Option<String>,
+    pub(crate) claude_trusted_workspace: bool,
     pub(crate) first_chat: bool,
     pub(crate) project_id: Option<String>,
     pub(crate) cwd: Option<PathBuf>,
@@ -189,6 +194,79 @@ pub(crate) struct SessionCreationCommand {
     pub(crate) ssh_port: Option<u16>,
     pub(crate) ssh_identity_file: Option<String>,
     pub(crate) sandbox: SessionSandboxCommand,
+}
+
+impl SessionCreationCommand {
+    fn validate_runtime_selection(&self, managed_host: bool) -> Result<()> {
+        match self.agent_runtime {
+            AgentRuntime::Nac => {
+                if self.claude_executable.is_some()
+                    || self.claude_model.is_some()
+                    || self.claude_config_dir.is_some()
+                    || self.claude_trusted_workspace
+                {
+                    return Err(anyhow!(
+                        "invalid request: Claude settings require agent_runtime 'claude-agent'"
+                    ));
+                }
+            }
+            AgentRuntime::ClaudeAgent => {
+                if self.behavior != SessionBehavior::Direct {
+                    return Err(anyhow!(
+                        "invalid request: Claude Agent requires direct behavior"
+                    ));
+                }
+                if !self.claude_trusted_workspace {
+                    return Err(anyhow!(
+                        "invalid request: Claude Agent requires a trusted workspace confirmation"
+                    ));
+                }
+                if managed_host {
+                    return Err(anyhow!(
+                        "invalid request: Claude Agent is unavailable on managed hosts"
+                    ));
+                }
+                if sandbox_requested(&self.sandbox) {
+                    return Err(anyhow!(
+                        "invalid request: Claude Agent cannot use a sandbox"
+                    ));
+                }
+                if !matches!(self.model, Field::Unchanged)
+                    || !matches!(self.base_url, Field::Unchanged)
+                    || !matches!(self.allow_insecure_http, Field::Unchanged)
+                    || !matches!(self.backend, Field::Unchanged)
+                    || !matches!(self.reasoning_effort, Field::Unchanged)
+                    || !matches!(self.api_key_env, Field::Unchanged)
+                    || !matches!(self.extra_headers, Field::Unchanged)
+                    || !matches!(self.orchestrator_compaction_threshold, Field::Unchanged)
+                    || !matches!(self.light_model, Field::Unchanged)
+                {
+                    return Err(anyhow!(
+                        "invalid request: NAC model settings cannot be used with Claude Agent"
+                    ));
+                }
+                for (name, value) in [
+                    ("claude_executable", self.claude_executable.as_deref()),
+                    ("claude_model", self.claude_model.as_deref()),
+                    ("claude_config_dir", self.claude_config_dir.as_deref()),
+                ] {
+                    if value.is_some_and(|value| value.trim().is_empty()) {
+                        return Err(anyhow!("invalid request: {name} cannot be blank"));
+                    }
+                }
+                if self
+                    .claude_config_dir
+                    .as_deref()
+                    .is_some_and(|dir| !Path::new(dir).is_absolute())
+                {
+                    return Err(anyhow!(
+                        "invalid request: claude_config_dir must be an absolute path on the execution host"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -226,6 +304,7 @@ impl<'a> SessionCreationApplication<'a> {
         &self,
         mut request: SessionCreationCommand,
     ) -> Result<SessionFrontendSnapshot> {
+        request.validate_runtime_selection(self.manager.managed_host().is_some())?;
         let first_chat_project_id = if request.first_chat {
             Some(
                 request
@@ -265,12 +344,15 @@ impl<'a> SessionCreationApplication<'a> {
                     "invalid request: project_id cannot be combined with cwd or ssh location fields"
                 ));
             }
-            if let Some(defaults) = context.default_model_config {
-                apply_project_model_defaults(&mut request, defaults);
-            } else if let Some(sibling) =
-                newest_project_session(&self.manager.inner.store_path, &context.project.project_id)
-            {
-                apply_sibling_model_defaults(&mut request, sibling);
+            if request.agent_runtime == AgentRuntime::Nac {
+                if let Some(defaults) = context.default_model_config {
+                    apply_project_model_defaults(&mut request, defaults);
+                } else if let Some(sibling) = newest_project_session(
+                    &self.manager.inner.store_path,
+                    &context.project.project_id,
+                ) {
+                    apply_sibling_model_defaults(&mut request, sibling);
+                }
             }
             let project = context.project;
             let ssh = runtime::SshOptions {
@@ -309,8 +391,41 @@ impl<'a> SessionCreationApplication<'a> {
                 "invalid request: ssh_host and sandbox options cannot both be set"
             ));
         }
+        let config = if request.agent_runtime == AgentRuntime::ClaudeAgent {
+            NacConfig::load_without_model_from_cwd(&location.config_cwd)?
+        } else {
+            NacConfig::load_from_cwd(&location.config_cwd)?
+        };
+        if request.agent_runtime == AgentRuntime::ClaudeAgent {
+            let claude = sessions::ClaudeAgentSession {
+                executable: request
+                    .claude_executable
+                    .unwrap_or_else(|| "claude".to_string()),
+                model: request.claude_model,
+                config_dir: request.claude_config_dir,
+                trusted_workspace: request.claude_trusted_workspace,
+                native_session_id: None,
+            };
+            let run_config = runtime::build_claude_run_config_for_project(
+                RunOptions {
+                    workspace_cwd: location.workspace_cwd,
+                    config_cwd: Some(location.config_cwd),
+                    worker_executable: Some(self.manager.inner.worker_executable.clone()),
+                    store: StoreOptions {
+                        store_path: Some(self.manager.inner.store_path.clone()),
+                    },
+                    ssh: location.ssh,
+                    ..RunOptions::default()
+                },
+                &config,
+                project_id,
+                claude,
+            )
+            .await?;
+            let service = SessionService::from_claude_run_config(run_config)?.service;
+            return self.publish_session(service).await;
+        }
         apply_managed_model_defaults(&mut request, self.manager.managed_model());
-        let config = NacConfig::load_from_cwd(&location.config_cwd)?;
         let orchestrator_compaction_threshold =
             create_compaction_threshold_override(request.orchestrator_compaction_threshold)?;
         let mut model = model_options(
@@ -399,6 +514,10 @@ impl<'a> SessionCreationApplication<'a> {
         if self.manager.managed_host().is_some() {
             service.enable_managed_admission(self.manager.managed_identity().cloned());
         }
+        self.publish_session(service).await
+    }
+
+    async fn publish_session(&self, service: SessionService) -> Result<SessionFrontendSnapshot> {
         service.acquire_sandbox_resource_lease()?;
         let snapshot = service.frontend_snapshot().await?;
         let session_id = snapshot
@@ -413,5 +532,17 @@ impl<'a> SessionCreationApplication<'a> {
             .await
             .insert(session_id, Arc::new(service));
         Ok(snapshot)
+    }
+}
+
+impl SessionManager {
+    pub async fn create_session(
+        &self,
+        request: CreateSessionRequest,
+    ) -> Result<SessionFrontendSnapshot> {
+        let _host_admission = self.managed_work_admission()?;
+        self.session_creation()
+            .create_session(request.into_application())
+            .await
     }
 }

@@ -281,6 +281,9 @@ impl SessionService {
         client_id: Option<SessionClientId>,
         supplied_lease: Option<sessions::SessionOperationLease>,
     ) -> std::result::Result<SessionCompactionHandle, SessionCompactionAdmissionError> {
+        if self.claude_engine().is_some() {
+            return Err(SessionCompactionAdmissionError::Unavailable);
+        }
         let Some(_session_id) = self.metadata.session_id.as_deref() else {
             return Err(SessionCompactionAdmissionError::Unavailable);
         };
@@ -344,7 +347,7 @@ impl SessionService {
             completion: Some(completion_tx),
             lifecycle: Some(lifecycle),
         };
-        let agent = Arc::clone(&self.agent);
+        let agent = Arc::clone(self.nac_agent().expect("NAC compaction uses NAC engine"));
         let persist_service = self.clone();
         let compaction_id = snapshot.compaction_id;
         let task = tokio::spawn(async move {

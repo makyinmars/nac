@@ -54,10 +54,58 @@ it("loads all mounted-key models without sending a browser credential", async ()
   const hook = renderHook(() => useReadyProviderModels(catalog), { wrapper });
   try {
     await waitFor(() => expect(hook.result.current.get("arcee-api")).toEqual(models));
-    expect(discovery).toHaveBeenCalledExactlyOnceWith({
-      backend: "arcee-api",
-      base_url: "https://api.arcee.ai/api/v1",
-    });
+    expect(discovery).toHaveBeenCalledExactlyOnceWith(
+      {
+        backend: "arcee-api",
+        base_url: "https://api.arcee.ai/api/v1",
+      },
+      expect.any(AbortSignal),
+    );
+  } finally {
+    hook.unmount();
+    client.clear();
+    host.mockRestore();
+    discovery.mockRestore();
+  }
+});
+
+it("defers provider discovery until its picker enables it", async () => {
+  const status = { model_ready: false } as ManagedHostStatus;
+  const catalog: ModelCatalog = {
+    catalog_version: 1,
+    providers: [
+      {
+        id: "openai-responses",
+        auth: "api_key_env",
+        auth_status: "ready",
+        connection: { base_url: "https://api.openai.com/v1", api_key_env: "OPENAI_API_KEY" },
+        models: [],
+        auth_hint: null,
+        default_base_url: "https://api.openai.com/v1",
+        managed_base_url: null,
+        default_limits: { context_window: 128000, max_tokens: 4096, supported_efforts: [] },
+      },
+    ],
+  };
+  const host = vi.spyOn(api, "getManagedStatus").mockResolvedValue(status);
+  const discovery = vi.spyOn(api, "listProviderModels").mockResolvedValue({
+    base_url: "https://api.openai.com/v1",
+    models: [{ id: "gpt-5.6-sol", display_name: "GPT" }],
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: PropsWithChildren) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const hook = renderHook(({ enabled }) => useReadyProviderModels(catalog, enabled), {
+    initialProps: { enabled: false },
+    wrapper,
+  });
+  try {
+    await waitFor(() => expect(host).toHaveBeenCalled());
+    expect(discovery).not.toHaveBeenCalled();
+    hook.rerender({ enabled: true });
+    await waitFor(() => expect(discovery).toHaveBeenCalledTimes(1));
+    expect(discovery.mock.calls[0]?.[1]).toBeInstanceOf(AbortSignal);
   } finally {
     hook.unmount();
     client.clear();

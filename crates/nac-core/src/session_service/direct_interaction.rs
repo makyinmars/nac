@@ -130,6 +130,13 @@ impl SessionService {
         content: &str,
         client_id: Option<&SessionClientId>,
     ) -> Result<crate::store::SessionInboxRecord> {
+        // Claude's supervised turn has no acknowledged mid-turn steering
+        // protocol. A requested steer is a durable successor input instead.
+        let delivery = if self.claude_engine().is_some() {
+            crate::store::InboxDelivery::Queue
+        } else {
+            delivery
+        };
         let session_id = self
             .metadata
             .session_id
@@ -168,6 +175,11 @@ impl SessionService {
         delivery: crate::store::InboxDelivery,
     ) -> Result<crate::store::SessionInboxRecord> {
         self.require_direct_primary_behavior()?;
+        let delivery = if self.claude_engine().is_some() {
+            crate::store::InboxDelivery::Queue
+        } else {
+            delivery
+        };
         let session_id = self
             .metadata
             .session_id

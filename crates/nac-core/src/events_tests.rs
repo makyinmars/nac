@@ -951,6 +951,7 @@ fn external_tool_telemetry_is_fail_closed_before_channel_and_database() {
     let started = AgentEvent::ToolCallStarted {
         thread_name: Some("worker".to_string()),
         call_id: "call-safe".to_string(),
+        parent_call_id: None,
         name: "exec_command".to_string(),
         args_preview: "CANARY_COMMAND".to_string(),
         key_arg_preview: None,
@@ -970,6 +971,7 @@ fn external_tool_telemetry_is_fail_closed_before_channel_and_database() {
     channel_sink.emit(AgentEvent::ToolCallStarted {
         thread_name: Some("worker".to_string()),
         call_id: "call-write".to_string(),
+        parent_call_id: None,
         name: "write".to_string(),
         args_preview: "CANARY_WRITE".to_string(),
         key_arg_preview: None,
@@ -985,6 +987,7 @@ fn external_tool_telemetry_is_fail_closed_before_channel_and_database() {
     bus_sink.emit(AgentEvent::ToolCallFinished {
         thread_name: Some("worker".to_string()),
         call_id: "call-safe".to_string(),
+        parent_call_id: None,
         name: "exec_command".to_string(),
         content_preview: "exit 7: test result".to_string(),
         is_error: true,
@@ -1285,6 +1288,7 @@ fn primary_tool_event_sanitization_keeps_only_bounded_safe_presentation_fields()
     let started = AgentEvent::ToolCallStarted {
         thread_name: None,
         call_id: "call-safe".to_string(),
+        parent_call_id: Some("toolu-parent-1".to_string()),
         name: format!("exec_command\u{0}{}", "x".repeat(200)),
         args_preview: r#"{"cmd":"printf safe","authorization":"Bearer sk-tool-canary","env":{"TOKEN":"sk-tool-canary"}}"#.to_string(),
         key_arg_preview: Some(format!(
@@ -1301,6 +1305,7 @@ fn primary_tool_event_sanitization_keeps_only_bounded_safe_presentation_fields()
         args_preview,
         key_arg_preview,
         args_detail,
+        parent_call_id,
         ..
     } = sanitized
     else {
@@ -1313,11 +1318,13 @@ fn primary_tool_event_sanitization_keeps_only_bounded_safe_presentation_fields()
     assert!(name.chars().count() <= 160);
     assert!(key_arg_preview.chars().count() <= 180);
     assert_eq!(args_detail, None);
+    assert_eq!(parent_call_id.as_deref(), Some("toolu-parent-1"));
     assert!(serialized.contains("printf safe"), "{serialized}");
 
     let finished = AgentEvent::ToolCallFinished {
         thread_name: None,
         call_id: "call-safe".to_string(),
+        parent_call_id: Some("toolu-parent-1".to_string()),
         name: "exec_command".to_string(),
         content_preview: format!(
             "Authorization: Bearer sk-tool-canary; command completed {}",
@@ -1337,12 +1344,15 @@ fn primary_tool_event_sanitization_keeps_only_bounded_safe_presentation_fields()
     assert!(!serialized.contains("sk-tool-canary"), "{serialized}");
     assert!(serialized.contains("command completed"), "{serialized}");
     let AgentEvent::ToolCallFinished {
-        content_preview, ..
+        content_preview,
+        parent_call_id,
+        ..
     } = sanitized
     else {
         panic!("expected ToolCallFinished");
     };
     assert!(content_preview.chars().count() <= 180);
+    assert_eq!(parent_call_id.as_deref(), Some("toolu-parent-1"));
 }
 
 const MODEL_ERROR_CANARY: &str = "sk-canary-sink-12345";

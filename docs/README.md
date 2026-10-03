@@ -7,6 +7,7 @@ Detailed documentation for nac. The [root README](../README.md) has install, aut
   - [Skills](usage/skills.md)
   - [Sandbox](usage/sandbox.md)
   - [Session behaviors](usage/session-behaviors.md)
+  - [Claude Agent on a personal NAC installation](usage/claude-agent.md)
   - [Direct-session permissions](usage/permissions.md)
   - [Durable direct goals](usage/direct-goals.md)
   - [Traditional child sessions](usage/traditional-children.md)

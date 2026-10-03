@@ -1046,12 +1046,212 @@ fn create_session_request_deserializes_optional_ssh_host() {
 }
 
 #[tokio::test]
+async fn claude_create_rejects_incompatible_settings_before_store_mutation() {
+    let root = temp_root("claude_create_validation");
+    let manager = test_manager(&root);
+    let base = CreateSessionRequest {
+        behavior: sessions::SessionBehavior::Direct,
+        agent_runtime: sessions::AgentRuntime::ClaudeAgent,
+        claude_trusted_workspace: true,
+        ..CreateSessionRequest::default()
+    };
+    let cases = [
+        (
+            CreateSessionRequest {
+                behavior: sessions::SessionBehavior::Orchestrator,
+                ..base.clone()
+            },
+            "requires direct behavior",
+        ),
+        (
+            CreateSessionRequest {
+                claude_trusted_workspace: false,
+                ..base.clone()
+            },
+            "trusted workspace",
+        ),
+        (
+            CreateSessionRequest {
+                model: RequestField::Value("claude-sonnet".to_string()),
+                ..base.clone()
+            },
+            "NAC model settings",
+        ),
+        (
+            CreateSessionRequest {
+                sandbox: SandboxRequest {
+                    enabled: true,
+                    ..SandboxRequest::default()
+                },
+                ..base.clone()
+            },
+            "cannot use a sandbox",
+        ),
+        (
+            CreateSessionRequest {
+                claude_config_dir: Some(" ".to_string()),
+                ..base.clone()
+            },
+            "claude_config_dir cannot be blank",
+        ),
+        (
+            CreateSessionRequest {
+                claude_config_dir: Some("relative/claude-login".to_string()),
+                ..base
+            },
+            "claude_config_dir must be an absolute path",
+        ),
+    ];
+    for (request, expected) in cases {
+        let error = manager.create_session(request).await.unwrap_err();
+        assert!(error.to_string().contains(expected), "{error:#}");
+        assert_eq!(ApiError::from(error).status, StatusCode::BAD_REQUEST);
+        assert!(!root.join("store.db").exists());
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn claude_status_reports_missing_host_executable_without_creating_session() {
+    let root = temp_root("claude_status_missing_executable");
+    let manager = test_manager(&root);
+    let status = manager
+        .claude_status(ClaudeStatusQuery {
+            claude_executable: Some(root.join("missing-claude").display().to_string()),
+            ..ClaudeStatusQuery::default()
+        })
+        .await
+        .unwrap();
+    assert!(!status.available);
+    assert!(!status.authenticated);
+    assert!(status.reason.is_some());
+    let relative_config = manager
+        .claude_status(ClaudeStatusQuery {
+            claude_config_dir: Some("relative/claude-login".to_string()),
+            ..ClaudeStatusQuery::default()
+        })
+        .await
+        .unwrap();
+    assert!(!relative_config.available);
+    assert!(relative_config
+        .reason
+        .unwrap()
+        .contains("claude_config_dir must be an absolute path"));
+    assert!(!root.join("store.db").exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn claude_session_creation_and_restart_attachment_keep_runtime_binding() {
+    let root = temp_root("claude_creation_attachment");
+    let manager = test_manager(&root);
+    let created = manager
+        .create_session(CreateSessionRequest {
+            behavior: sessions::SessionBehavior::Direct,
+            agent_runtime: sessions::AgentRuntime::ClaudeAgent,
+            claude_executable: Some("claude-custom".to_string()),
+            claude_model: Some("sonnet".to_string()),
+            claude_trusted_workspace: true,
+            ..CreateSessionRequest::default()
+        })
+        .await
+        .unwrap();
+    let session_id = created.metadata.session_id.unwrap();
+    let stored = sessions::load_session(&root.join("store.db"), &session_id).unwrap();
+    assert_eq!(stored.agent_runtime, sessions::AgentRuntime::ClaudeAgent);
+    assert_eq!(stored.behavior, sessions::SessionBehavior::Direct);
+    assert_eq!(
+        stored.claude_agent.as_ref().unwrap().executable,
+        "claude-custom"
+    );
+    assert_eq!(
+        stored.claude_agent.as_ref().unwrap().model.as_deref(),
+        Some("sonnet")
+    );
+    manager
+        .inner
+        .active_sessions
+        .write()
+        .await
+        .remove(&session_id);
+    let attached = manager.attach_session(&session_id).await.unwrap();
+    assert_eq!(
+        attached
+            .frontend_snapshot()
+            .await
+            .unwrap()
+            .metadata
+            .agent_runtime,
+        sessions::AgentRuntime::ClaudeAgent
+    );
+    let error = manager
+        .update_session_config(
+            &session_id,
+            UpdateConfigRequest {
+                model: RequestField::Value("other".to_string()),
+                ..UpdateConfigRequest::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("NAC model settings"));
+    assert_eq!(ApiError::from(error).status, StatusCode::BAD_REQUEST);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn claude_worker_trust_action_persists_only_for_nac_orchestrators() {
+    let root = temp_root("claude_worker_trust");
+    seed_session(&root, "orchestrator", "2026-01-01 00:00:00.000000000");
+    let manager = test_manager(&root);
+    manager
+        .trust_claude_worker_workspace("orchestrator")
+        .await
+        .unwrap();
+    let stored = sessions::load_session(&root.join("store.db"), "orchestrator").unwrap();
+    assert!(stored.claude_worker_trusted_workspace);
+    assert_eq!(stored.agent_runtime, sessions::AgentRuntime::Nac);
+
+    let mut direct = sessions::new_snapshot(
+        "direct".to_string(),
+        root.clone(),
+        "model-a".to_string(),
+        "https://api.openai.com/v1".to_string(),
+        BackendKind::OpenAiResponses,
+        None,
+        None,
+        None,
+        Vec::new(),
+        None,
+        BTreeMap::new(),
+    );
+    direct.behavior = sessions::SessionBehavior::Direct;
+    sessions::create_session(&root.join("store.db"), &direct).unwrap();
+    let error = manager
+        .trust_claude_worker_workspace("direct")
+        .await
+        .unwrap_err();
+    assert_eq!(ApiError::from(error).status, StatusCode::BAD_REQUEST);
+    assert!(
+        !sessions::load_session(&root.join("store.db"), "direct")
+            .unwrap()
+            .claude_worker_trusted_workspace
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn create_session_rejects_ssh_host_combined_with_sandbox() {
     let root = temp_root("host_sandbox_conflict");
     let manager = test_manager(&root);
 
     let request = CreateSessionRequest {
         behavior: sessions::SessionBehavior::Orchestrator,
+        agent_runtime: sessions::AgentRuntime::Nac,
+        claude_executable: None,
+        claude_model: None,
+        claude_config_dir: None,
+        claude_trusted_workspace: false,
         first_chat: false,
         project_id: None,
         cwd: None,
@@ -1092,6 +1292,11 @@ async fn server_create_rejects_removed_backend_names_as_bad_requests() {
         let error = manager
             .create_session(CreateSessionRequest {
                 behavior: sessions::SessionBehavior::Orchestrator,
+                agent_runtime: sessions::AgentRuntime::Nac,
+                claude_executable: None,
+                claude_model: None,
+                claude_config_dir: None,
+                claude_trusted_workspace: false,
                 first_chat: false,
                 project_id: None,
                 cwd: None,

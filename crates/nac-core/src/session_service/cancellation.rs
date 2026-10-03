@@ -55,6 +55,9 @@ impl SessionService {
 
         if self.metadata.behavior != sessions::SessionBehavior::Orchestrator {
             cancelling_run.command_cancellation.cancel();
+            if let Some(broker) = &self.claude_approval_broker {
+                broker.close_scope(run_id.as_str(), 0);
+            }
             // Terminal handles are session-owned and can be idle while the
             // model is between tool calls. Start settlement immediately, then
             // repeat it after the run task has stopped. PTY spawn and input
@@ -82,6 +85,13 @@ impl SessionService {
                 task.abort();
                 let _ = (&mut *task).await;
             }
+        }
+
+        if let Err(error) = self.settle_claude_process_markers().await {
+            return Err(SessionCancelError::Cleanup {
+                run_id: cancelling_run.snapshot.run_id.clone(),
+                message: format!("Claude process cleanup is incomplete: {error:#}"),
+            });
         }
 
         if self.metadata.behavior != sessions::SessionBehavior::Orchestrator {

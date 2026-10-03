@@ -57,6 +57,17 @@ impl<'a> SessionIntentApplication<'a> {
         Self { manager }
     }
 
+    fn require_nac_control(&self, session_id: &str) -> Result<()> {
+        if sessions::load_session(&self.manager.inner.store_path, session_id)?.agent_runtime
+            == sessions::AgentRuntime::ClaudeAgent
+        {
+            return Err(anyhow!(
+                "invalid request: NAC goals and permission grants are unavailable for Claude Agent sessions"
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn create_inbox_item(
         &self,
         session_id: &str,
@@ -112,6 +123,7 @@ impl<'a> SessionIntentApplication<'a> {
         session_id: &str,
         command: CreateGoal,
     ) -> Result<SessionGoalRecord> {
+        self.require_nac_control(session_id)?;
         self.manager
             .attach_session(session_id)
             .await?
@@ -125,6 +137,7 @@ impl<'a> SessionIntentApplication<'a> {
         goal_id: &str,
         command: UpdateGoal,
     ) -> Result<SessionGoalRecord> {
+        self.require_nac_control(session_id)?;
         self.manager
             .attach_session(session_id)
             .await?
@@ -146,6 +159,7 @@ impl<'a> SessionIntentApplication<'a> {
         goal_id: &str,
         expected_version: i64,
     ) -> Result<()> {
+        self.require_nac_control(session_id)?;
         self.manager
             .attach_session(session_id)
             .await?
@@ -169,6 +183,7 @@ impl<'a> SessionIntentApplication<'a> {
         session_id: &str,
         mode: PermissionApprovalMode,
     ) -> Result<()> {
+        self.require_nac_control(session_id)?;
         self.manager.require_primary_direct_session(session_id)?;
         self.manager
             .attach_session(session_id)
@@ -182,6 +197,7 @@ impl<'a> SessionIntentApplication<'a> {
         session_id: &str,
         grant_id: &str,
     ) -> Result<()> {
+        self.require_nac_control(session_id)?;
         self.manager
             .attach_session(session_id)
             .await?

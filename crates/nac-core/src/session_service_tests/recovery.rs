@@ -162,7 +162,17 @@ async fn shared_store_recovery_after_peer_crash_preserves_committed_transcript()
     });
     // The survivor's cached agent and run accounting predate both peer
     // runs.
-    assert_eq!(parts.service.agent.lock().await.messages.len(), 1);
+    assert_eq!(
+        parts
+            .service
+            .nac_agent()
+            .unwrap()
+            .lock()
+            .await
+            .messages
+            .len(),
+        1
+    );
     assert!(parts
         .service
         .session_snapshot
@@ -256,7 +266,7 @@ async fn shared_store_recovery_after_peer_crash_preserves_committed_transcript()
         matches!(&log[4].1, Message::Assistant { content: Some(text), .. } if text == "survivor answer")
     );
 
-    let agent = parts.service.agent.lock().await;
+    let agent = parts.service.nac_agent().unwrap().lock().await;
     assert_eq!(agent.messages.len(), 6);
     for (idx, message) in &log {
         assert_eq!(
@@ -445,7 +455,7 @@ async fn completed_run_reports_failure_when_snapshot_persistence_fails() {
     let mut events = parts.service.subscribe_events();
     let active = parts.service.try_begin_run(None, "prompt").unwrap();
     {
-        let mut agent = parts.service.agent.lock().await;
+        let mut agent = parts.service.nac_agent().unwrap().lock().await;
         agent.messages.push(Message::User {
             content: "prompt".to_string(),
         });
@@ -629,7 +639,7 @@ async fn client_subscribers_receive_same_events_with_unique_identity() {
 #[tokio::test]
 async fn frontend_snapshot_does_not_wait_for_agent_lock_while_active_run() {
     let parts = test_picker_service("snapshot_nonblocking");
-    let agent_guard = parts.service.agent.lock().await;
+    let agent_guard = parts.service.nac_agent().unwrap().lock().await;
     let active = parts.service.try_begin_run(None, "blocked prompt").unwrap();
 
     let snapshot = tokio::time::timeout(
@@ -705,7 +715,7 @@ async fn mark_run_finishing_clears_submitted_user_message_before_persistence() {
     assert!(active.submitted_user_message.is_some());
     assert_eq!(parts.service.active_run(), Some(active.clone()));
     {
-        let mut agent = parts.service.agent.lock().await;
+        let mut agent = parts.service.nac_agent().unwrap().lock().await;
         agent
             .push_and_log_for_test(Message::User {
                 content: "persisted prompt".to_string(),
@@ -810,7 +820,7 @@ async fn mark_run_cancelling_clears_submitted_user_message() {
 async fn dropping_a_cancel_caller_does_not_drop_owned_settlement() {
     let parts = test_picker_service("cancel_caller_drop_owned");
     let active = parts.service.try_begin_run(None, "cancel prompt").unwrap();
-    let agent_guard = parts.service.agent.lock().await;
+    let agent_guard = parts.service.nac_agent().unwrap().lock().await;
     let service = parts.service.clone();
     let run_id = active.run_id.clone();
     let caller = tokio::spawn(async move { service.request_cancel(&run_id).await });
@@ -840,7 +850,7 @@ async fn dropping_a_cancel_caller_does_not_drop_owned_settlement() {
     })
     .await
     .expect("detached cancellation settlement did not finish");
-    let agent = parts.service.agent.lock().await;
+    let agent = parts.service.nac_agent().unwrap().lock().await;
     assert_eq!(
         agent
             .messages
@@ -1045,7 +1055,7 @@ async fn failed_run_persists_messages_without_recording_new_duration() {
     let mut events = parts.service.subscribe_events();
     let active = parts.service.try_begin_run(None, "failed prompt").unwrap();
     {
-        let mut agent = parts.service.agent.lock().await;
+        let mut agent = parts.service.nac_agent().unwrap().lock().await;
         agent
             .push_and_log_run_prompt_for_test(
                 Message::User {
@@ -1149,7 +1159,7 @@ async fn cancellation_waits_for_the_atomic_prompt_commit() {
     );
 
     {
-        let mut agent = parts.service.agent.lock().await;
+        let mut agent = parts.service.nac_agent().unwrap().lock().await;
         agent
             .push_and_log_run_prompt_for_test(
                 Message::User {
@@ -1247,7 +1257,7 @@ async fn request_cancel_persists_marker_and_emits_terminal_event() {
     )
     .unwrap();
     {
-        let mut agent = parts.service.agent.lock().await;
+        let mut agent = parts.service.nac_agent().unwrap().lock().await;
         agent
             .push_and_log_run_prompt_for_test(
                 Message::User {
@@ -1383,7 +1393,7 @@ async fn direct_cancel_settles_foreground_terminal_without_another_tool_poll() {
 
     let active = parts.service.try_begin_run(None, "cancel prompt").unwrap();
     {
-        let mut agent = parts.service.agent.lock().await;
+        let mut agent = parts.service.nac_agent().unwrap().lock().await;
         agent
             .push_and_log_run_prompt_for_test(
                 Message::User {

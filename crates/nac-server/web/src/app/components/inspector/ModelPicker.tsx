@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { type SelectItem } from "@/app/atoms";
 import { CatalogModelPicker } from "@/app/components/modals/CatalogModelPicker";
@@ -35,9 +35,10 @@ export function ModelPicker({
   disabled: boolean;
 }) {
   const toast = useToast();
+  const [pickerOpen, setPickerOpen] = useState(false);
   const catalog = useModelCatalog();
   const managedModel = useManagedModelProfile();
-  const liveByBackend = useReadyProviderModels(catalog.data);
+  const liveByBackend = useReadyProviderModels(catalog.data, pickerOpen);
   const updateConfig = useUpdateConfig();
   const currentModel = metadata?.model ?? label;
   const currentEffort = metadata?.reasoning_effort ?? "";
@@ -120,6 +121,7 @@ export function ModelPicker({
         disabled={disabled || !metadata || updateConfig.isPending}
         liveByBackend={liveByBackend}
         value={currentPick}
+        onOpenChange={setPickerOpen}
         onSelect={(pick) => void chooseModel(pick)}
       />
       <SmallSelect

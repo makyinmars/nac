@@ -18,6 +18,7 @@ use crate::types::{Message, ToolCall, ToolDefinition};
 mod compaction;
 mod dag;
 mod failed_tool_round;
+mod permission_brokers;
 pub(crate) mod preview;
 mod prompt_rendering;
 mod tool_exec;
@@ -410,6 +411,7 @@ impl Agent {
                 light_client: config.light_client,
                 allowed_tools: Some(allowed_tools),
                 permission_broker: None,
+                claude_approval_broker: None,
                 goal_runtime,
                 command_environment: None,
                 web_credential: None,
@@ -982,31 +984,6 @@ impl Agent {
     pub fn set_event_sink(&mut self, sink: EventSink) {
         self.event_sink = sink.clone();
         self.tool_runtime.event_sink = sink;
-    }
-
-    pub(crate) fn configure_permission_broker(
-        &mut self,
-        session_config_version: i64,
-    ) -> Option<Arc<crate::permissions::PermissionBroker>> {
-        if !self.direct_primary {
-            return None;
-        }
-        if let Some(existing) = &self.tool_runtime.permission_broker {
-            return Some(Arc::clone(existing));
-        }
-        let session_id = self.tool_runtime.session_id.clone()?;
-        let backend = crate::permissions::PermissionBackend::from_execution_backend(
-            self.tool_runtime.backend.as_ref(),
-        );
-        let broker = Arc::new(crate::permissions::PermissionBroker::new(
-            self.tool_runtime.store_path.clone(),
-            session_id,
-            backend,
-            session_config_version,
-            self.permission_rules.clone(),
-        ));
-        self.tool_runtime.permission_broker = Some(Arc::clone(&broker));
-        Some(broker)
     }
 
     pub fn active_threads_handle(&self) -> Arc<crate::tools::ActiveThreadRegistry> {

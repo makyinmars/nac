@@ -24,11 +24,12 @@ pub(crate) use db::{
     load_session_run_state, reserve_permission_approval_transition,
 };
 pub use db::{
-    create_session, delete_session, increment_run_count, list_sessions, load_last_session,
-    load_permission_approval_mode, load_session, load_session_behavior, load_session_config,
-    reorder_sessions, save_session, save_session_run_state, session_exists,
-    update_permission_approval_mode, update_raw_session_config, update_session_config,
-    update_session_presentation,
+    create_session, delete_session, increment_run_count, list_sessions,
+    load_claude_worker_workspace_trust, load_last_session, load_permission_approval_mode,
+    load_session, load_session_behavior, load_session_config, reorder_sessions,
+    save_claude_native_session_id, save_session, save_session_run_state, session_exists,
+    trust_claude_worker_workspace, update_permission_approval_mode, update_raw_session_config,
+    update_session_config, update_session_presentation,
 };
 pub use operation_lease::{
     HostAdmissionLease, HostMaintenanceLease, SessionOperationLease, SessionOperationLeaseError,
@@ -98,6 +99,47 @@ impl std::str::FromStr for SessionBehavior {
             _ => Err(anyhow!("unsupported stored session behavior '{value}'")),
         }
     }
+}
+
+/// Immutable owner of the model loop for a top-level session.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum AgentRuntime {
+    #[default]
+    Nac,
+    ClaudeAgent,
+}
+
+impl AgentRuntime {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Nac => "nac",
+            Self::ClaudeAgent => "claude-agent",
+        }
+    }
+}
+
+impl std::str::FromStr for AgentRuntime {
+    type Err = anyhow::Error;
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "nac" => Ok(Self::Nac),
+            "claude-agent" => Ok(Self::ClaudeAgent),
+            _ => Err(anyhow!("unsupported stored agent runtime '{value}'")),
+        }
+    }
+}
+
+/// Claude launch settings, pinned to the snapshot's workspace and SSH host.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ClaudeAgentSession {
+    pub executable: String,
+    pub model: Option<String>,
+    pub config_dir: Option<String>,
+    pub trusted_workspace: bool,
+    pub native_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -173,6 +215,9 @@ impl From<anyhow::Error> for SessionConfigUpdateError {
 pub struct SessionSnapshot {
     pub session_id: String,
     pub behavior: SessionBehavior,
+    pub agent_runtime: AgentRuntime,
+    pub claude_agent: Option<ClaudeAgentSession>,
+    pub claude_worker_trusted_workspace: bool,
     /// Explicit project association, stored authoritatively in `session_projects`.
     pub project_id: Option<String>,
     pub cwd: PathBuf,
@@ -217,6 +262,8 @@ pub struct SessionSnapshot {
 pub struct SessionSummary {
     pub session_id: String,
     pub behavior: SessionBehavior,
+    pub agent_runtime: AgentRuntime,
+    pub claude_worker_trusted_workspace: bool,
     pub project_id: Option<String>,
     pub cwd: PathBuf,
     pub workspace_host_path: Option<PathBuf>,

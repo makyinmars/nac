@@ -85,11 +85,56 @@ impl SessionService {
         // and terminal normalization would delete the peer's committed rows
         // from the stale length. Re-restoring under the lease is race-free.
         if let Some(lease) = operation_lease.as_ref() {
-            let mut agent = self.agent.try_lock().map_err(|_| {
-                OperationAdmissionPreparationError::Coordination {
-                    message: SessionCoordinationError::local_agent_busy(),
+            self.reconcile_claude_processes_under_lease()
+                .map_err(|error| OperationAdmissionPreparationError::Coordination {
+                    message: SessionCoordinationError::store(format!(
+                        "Claude process recovery must finish before another turn: {error:#}"
+                    )),
+                })?;
+            if self.claude_engine().is_some() {
+                let session_id = self.metadata.session_id.as_deref().ok_or_else(|| {
+                    OperationAdmissionPreparationError::Coordination {
+                        message: SessionCoordinationError::store(
+                            "Claude session id is unavailable".to_string(),
+                        ),
+                    }
+                })?;
+                let durable = sessions::load_session(&self.metadata.store_path, session_id)
+                    .map_err(|error| OperationAdmissionPreparationError::Coordination {
+                        message: SessionCoordinationError::store(format!(
+                            "failed to refresh Claude session: {error:#}"
+                        )),
+                    })?;
+                let mut merged = durable.messages.clone();
+                if let Some(writer) = self.transcript_log.as_ref() {
+                    let tail = writer
+                        .read_tail_from(session_id, merged.len() as u64)
+                        .map_err(|error| OperationAdmissionPreparationError::Coordination {
+                            message: SessionCoordinationError::store(format!(
+                                "failed to refresh Claude transcript: {error:#}"
+                            )),
+                        })?;
+                    merged.extend(tail.into_iter().map(|(_, message)| message));
                 }
-            })?;
+                *self.session_snapshot.try_lock().map_err(|_| {
+                    OperationAdmissionPreparationError::Coordination {
+                        message: SessionCoordinationError::local_agent_busy(),
+                    }
+                })? = Some(durable);
+                *self.lock_transcript_scan() = TranscriptScanCache::from_transcript(&merged);
+                return Ok(operation_lease);
+            }
+            let mut agent = self
+                .nac_agent()
+                .ok_or_else(|| OperationAdmissionPreparationError::Coordination {
+                    message: SessionCoordinationError::store(
+                        "Claude Agent transcript recovery requires its own engine".to_string(),
+                    ),
+                })?
+                .try_lock()
+                .map_err(|_| OperationAdmissionPreparationError::Coordination {
+                    message: SessionCoordinationError::local_agent_busy(),
+                })?;
             let durable_blob = agent
                 .refresh_transcript_under_lease(lease)
                 .map_err(|error| OperationAdmissionPreparationError::Coordination {
@@ -254,8 +299,22 @@ impl SessionService {
             }
             let baseline = service.lock_transcript_scan().visible_response_count;
             service.set_run_transcript_baseline(&task_run_id, baseline);
-            let (result, usage) = {
-                let mut agent = service.agent.lock().await;
+            let (result, usage) = if service.claude_engine().is_some() {
+                service
+                    .execute_claude_run(
+                        &expanded_prompt,
+                        &task_run_id,
+                        prompt_commit,
+                        inbox_item_id,
+                        run_client_id.clone(),
+                    )
+                    .await
+            } else {
+                let mut agent = service
+                    .nac_agent()
+                    .expect("NAC run uses NAC engine")
+                    .lock()
+                    .await;
                 agent.set_event_sink(EventSink::bus_with_context(
                     event_bus.clone(),
                     Some(task_run_id.clone()),
@@ -475,8 +534,15 @@ impl SessionService {
                 // active-thread registry and must not add a new agent-lock
                 // admission requirement.
                 crate::tools::ThreadCancellation::default()
+            } else if self.claude_engine().is_some() {
+                crate::tools::ThreadCancellation::default()
             } else {
-                self.agent
+                self.nac_agent()
+                    .ok_or_else(|| SessionSubmitError::Coordination {
+                        message: SessionCoordinationError::store(
+                            "NAC agent engine is unavailable for this session",
+                        ),
+                    })?
                     .try_lock()
                     .map_err(|_| SessionSubmitError::Coordination {
                         message: SessionCoordinationError::local_agent_busy(),

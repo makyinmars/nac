@@ -53,6 +53,77 @@ pub fn append_episode_with_status(
     Ok(())
 }
 
+/// Commit exactly one successful handoff for a dispatch. A retry returns the
+/// original committed answer and rejects a reused ID for another action or
+/// thread; the unique key is enforced by SQLite across processes.
+pub fn append_episode_for_dispatch_once(
+    path: &Path,
+    session_id: &str,
+    thread_name: &str,
+    dispatch_id: &str,
+    action: &str,
+    content: &str,
+) -> Result<EpisodeRecord> {
+    if dispatch_id.trim().is_empty() {
+        return Err(anyhow!("worker dispatch id is empty"));
+    }
+    let mut conn = open_runtime_connection(path)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if let Some(existing) = episode_for_dispatch_with_connection(&tx, session_id, dispatch_id)? {
+        if existing.thread_name != thread_name || existing.action != action {
+            return Err(anyhow!(
+                "dispatch '{dispatch_id}' already belongs to a different thread or action"
+            ));
+        }
+        tx.commit()?;
+        return Ok(existing);
+    }
+    ensure_thread_in_tx(&tx, session_id, thread_name)?;
+    let created_at = now_utc();
+    tx.execute(
+        "INSERT INTO episodes (thread_name, session_id, action, content, status, created_at, dispatch_id)
+         VALUES (?1, ?2, ?3, ?4, 'ok', ?5, ?6)",
+        params![thread_name, session_id, action, content, created_at, dispatch_id],
+    )?;
+    let id = tx.last_insert_rowid();
+    tx.execute(
+        "UPDATE threads SET updated_at = ?1 WHERE name = ?2 AND session_id = ?3",
+        params![created_at, thread_name, session_id],
+    )?;
+    let committed = tx.query_row(
+        "SELECT id, thread_name, session_id, action, content, status, created_at
+         FROM episodes WHERE id = ?1",
+        params![id],
+        row_to_episode,
+    )?;
+    tx.commit()?;
+    Ok(committed)
+}
+
+pub fn load_episode_for_dispatch(
+    path: &Path,
+    session_id: &str,
+    dispatch_id: &str,
+) -> Result<Option<EpisodeRecord>> {
+    let conn = open_runtime_connection(path)?;
+    episode_for_dispatch_with_connection(&conn, session_id, dispatch_id)
+}
+
+fn episode_for_dispatch_with_connection(
+    conn: &Connection,
+    session_id: &str,
+    dispatch_id: &str,
+) -> Result<Option<EpisodeRecord>> {
+    conn.query_row(
+        "SELECT id, thread_name, session_id, action, content, status, created_at
+         FROM episodes WHERE session_id = ?1 AND dispatch_id = ?2",
+        params![session_id, dispatch_id],
+        row_to_episode,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 pub fn load_worker_context(
     path: &Path,
     session_id: &str,
@@ -155,7 +226,7 @@ pub(crate) fn list_threads_with_connection(
                 (SELECT e.action FROM episodes e
                  WHERE e.thread_name = t.name AND e.session_id = t.session_id
                  ORDER BY e.id DESC
-                 LIMIT 1) AS latest_action
+                 LIMIT 1) AS latest_action, t.agent
          FROM threads t
          WHERE t.session_id = ?1
          ORDER BY t.updated_at DESC, t.name ASC",
@@ -171,9 +242,130 @@ pub(crate) fn list_threads_with_connection(
             updated_at: row.get(3)?,
             episode_count: row.get(4)?,
             latest_action: row.get(5)?,
+            agent: row
+                .get::<_, String>(6)?
+                .parse()
+                .map_err(|error: anyhow::Error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        6,
+                        rusqlite::types::Type::Text,
+                        error.into(),
+                    )
+                })?,
         });
     }
     Ok(threads)
+}
+
+/// Establishes a named thread's immutable agent and Claude resume binding.
+pub fn ensure_thread_agent(
+    path: &Path,
+    session_id: &str,
+    thread_name: &str,
+    agent: ThreadAgent,
+    binding: Option<&ClaudeThreadBinding>,
+) -> Result<()> {
+    if (agent == ThreadAgent::Claude) != binding.is_some() {
+        return Err(anyhow!(
+            "Claude threads require a binding; NAC threads cannot have one"
+        ));
+    }
+    let mut conn = open_runtime_connection(path)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let existing: Option<(String, Option<String>)> = tx
+        .query_row(
+            "SELECT agent, claude_binding_json FROM threads WHERE session_id = ?1 AND name = ?2",
+            params![session_id, thread_name],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match existing {
+        Some((stored_agent, stored_binding)) => {
+            if stored_agent != agent.as_str() {
+                return Err(anyhow!(
+                    "thread '{thread_name}' is already bound to agent '{stored_agent}'"
+                ));
+            }
+            if let Some(expected) = binding {
+                let stored: ClaudeThreadBinding = serde_json::from_str(
+                    stored_binding
+                        .as_deref()
+                        .ok_or_else(|| anyhow!("Claude thread binding is missing"))?,
+                )?;
+                if stored.host_id != expected.host_id
+                    || stored.ssh_port != expected.ssh_port
+                    || stored.ssh_identity_file != expected.ssh_identity_file
+                    || stored.workspace != expected.workspace
+                    || stored.config_dir != expected.config_dir
+                {
+                    return Err(anyhow!(
+                        "Claude thread '{thread_name}' host, workspace, or config binding changed"
+                    ));
+                }
+            }
+        }
+        None => {
+            let now = now_utc();
+            let binding_json = binding.map(serde_json::to_string).transpose()?;
+            tx.execute("INSERT INTO threads (name, session_id, created_at, updated_at, agent, claude_binding_json) VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
+                params![thread_name, session_id, now, agent.as_str(), binding_json])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn load_thread_claude_binding(
+    path: &Path,
+    session_id: &str,
+    thread_name: &str,
+) -> Result<Option<ClaudeThreadBinding>> {
+    let conn = open_runtime_connection(path)?;
+    let row: Option<(String, Option<String>, Option<String>)> = conn.query_row(
+        "SELECT agent, claude_binding_json, claude_native_session_id FROM threads WHERE session_id = ?1 AND name = ?2",
+        params![session_id, thread_name], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).optional()?;
+    let Some((agent, binding, native_session_id)) = row else {
+        return Ok(None);
+    };
+    if agent != ThreadAgent::Claude.as_str() {
+        return Ok(None);
+    }
+    let mut binding: ClaudeThreadBinding = serde_json::from_str(
+        binding
+            .as_deref()
+            .ok_or_else(|| anyhow!("Claude thread binding is missing"))?,
+    )?;
+    binding.native_session_id = native_session_id;
+    Ok(Some(binding))
+}
+
+pub fn save_thread_claude_session_id(
+    path: &Path,
+    session_id: &str,
+    thread_name: &str,
+    binding: &ClaudeThreadBinding,
+    native_session_id: &str,
+) -> Result<()> {
+    if native_session_id.trim().is_empty() {
+        return Err(anyhow!("Claude native session id is empty"));
+    }
+    ensure_thread_agent(
+        path,
+        session_id,
+        thread_name,
+        ThreadAgent::Claude,
+        Some(binding),
+    )?;
+    let conn = open_runtime_connection(path)?;
+    let changed = conn.execute("UPDATE threads SET claude_native_session_id = ?4 WHERE session_id = ?1 AND name = ?2 AND agent = 'claude' AND (claude_native_session_id IS NULL OR claude_native_session_id = ?3)",
+        params![session_id, thread_name, native_session_id, native_session_id])?;
+    if changed == 0 {
+        return Err(anyhow!(
+            "Claude native session id conflicts with the durable thread binding"
+        ));
+    }
+    Ok(())
 }
 
 pub fn thread_read(path: &Path, session_id: &str, thread_name: &str) -> Result<Vec<EpisodeRecord>> {

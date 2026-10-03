@@ -22,7 +22,7 @@ pub use crate::events::{
     SessionEventSubscription, SessionRunId, SessionSubscriptionId, SubmittedUserMessageSnapshot,
 };
 use crate::run_failure::FAILED_RUN_RECOVERY_DIAGNOSTIC as FAILED_RUN_WARNING;
-use crate::runtime::{OrchestratorRunConfig, OrchestratorSession};
+use crate::runtime::{ClaudeRunConfig, OrchestratorRunConfig, OrchestratorSession};
 use crate::sessions::{self, SessionSnapshot};
 use crate::skills::SkillRegistry;
 use crate::types::Message;
@@ -35,6 +35,7 @@ use crate::workspace::GitTarget;
 mod admission;
 mod attachment;
 mod cancellation;
+mod claude;
 mod direct_interaction;
 mod frontend_projection;
 mod manual_compaction;
@@ -63,6 +64,8 @@ pub struct SessionMetadata {
     pub session_id: Option<String>,
     #[serde(default)]
     pub behavior: sessions::SessionBehavior,
+    #[serde(default)]
+    pub agent_runtime: sessions::AgentRuntime,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     pub sandbox_status: String,
@@ -191,6 +194,8 @@ pub struct SessionServiceInit {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SessionFrontendSnapshot {
     pub metadata: SessionMetadata,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_agent: Option<sessions::ClaudeAgentSession>,
     pub messages: Vec<Message>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_recovery_warning: Option<String>,
@@ -563,9 +568,13 @@ impl FrontendSnapshotAfterWorkspaceGate {
 
 #[derive(Clone)]
 pub struct SessionService {
-    agent: Arc<Mutex<Agent>>,
+    engine: SessionEngine,
     goal_runtime: Option<Arc<crate::goals::GoalRuntime>>,
     metadata: Arc<SessionMetadata>,
+    /// A missing session row cannot own a Claude process marker (foreign key).
+    /// Legacy in-memory test services may intentionally have no row; real
+    /// persisted sessions retain the marker cleanup admission boundary.
+    durable_session_row_present: bool,
     /// Where git runs for this session's checkout — locally, or on the ssh host
     /// the session is working on. `None` for a sandbox with no mounted working
     /// directory, which is why such a session gets no revisions: its files do
@@ -596,6 +605,7 @@ pub struct SessionService {
     skills: Option<Arc<SkillRegistry>>,
     terminal_manager: crate::terminal::TerminalManager,
     permission_broker: Option<Arc<crate::permissions::PermissionBroker>>,
+    claude_approval_broker: Option<Arc<crate::claude_approval::ClaudeApprovalBroker>>,
     /// A sandbox service owns container-local state even while it has no run
     /// or retained terminal. Keep a shared cross-process resource lease for
     /// the complete attached-service lifetime so peer config/delete mutations
@@ -622,6 +632,38 @@ pub struct SessionService {
     goal_retry_wake: Arc<StdMutex<Option<GoalRetryWake>>>,
     #[cfg(test)]
     frontend_snapshot_after_workspace_gate: Option<Arc<FrontendSnapshotAfterWorkspaceGate>>,
+}
+
+#[derive(Clone)]
+enum SessionEngine {
+    Nac(Arc<Mutex<Agent>>),
+    Claude(Arc<ClaudeSessionEngine>),
+}
+
+#[derive(Clone)]
+struct ClaudeSessionEngine {
+    target: crate::claude_agent::Target,
+    cwd: PathBuf,
+    config: sessions::ClaudeAgentSession,
+    /// Bounded live text retained until a terminal transcript row commits.
+    /// Cancellation can still persist it if the run task must be aborted.
+    partial_output: Arc<StdMutex<String>>,
+}
+
+impl SessionService {
+    fn nac_agent(&self) -> Option<&Arc<Mutex<Agent>>> {
+        match &self.engine {
+            SessionEngine::Nac(agent) => Some(agent),
+            SessionEngine::Claude(_) => None,
+        }
+    }
+
+    fn claude_engine(&self) -> Option<&Arc<ClaudeSessionEngine>> {
+        match &self.engine {
+            SessionEngine::Claude(engine) => Some(engine),
+            SessionEngine::Nac(_) => None,
+        }
+    }
 }
 
 enum ActiveSessionOperation {
@@ -925,7 +967,16 @@ impl SessionService {
     }
 
     async fn append_cancellation_message(&self) -> Option<crate::model::TokenUsage> {
-        let mut agent = self.agent.lock().await;
+        let Some(agent) = self.nac_agent() else {
+            if let Err(error) = self
+                .append_claude_terminal_marker(crate::agent::RUN_CANCELLED_MARKER, true)
+                .await
+            {
+                eprintln!("nac: failed to retain cancelled Claude output: {error:#}");
+            }
+            return None;
+        };
+        let mut agent = agent.lock().await;
         // Close unfinished tool calls with cancellation results so their
         // thread cards remain in the transcript, then append the marker. A log
         // failure must not fail the cancel; the next restore normalizes any

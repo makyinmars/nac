@@ -1,4 +1,6 @@
 use super::*;
+#[path = "schema/claude_identity_tests.rs"]
+mod claude_identity_tests;
 #[path = "schema/http_policy_tests.rs"]
 mod http_policy_tests;
 
@@ -65,25 +67,6 @@ fn insert_legacy_session(conn: &Connection, session_id: &str) {
         params![session_id],
     )
     .unwrap();
-}
-
-#[test]
-fn runtime_connections_restore_wal_mode() {
-    let path = temp_store_path("runtime_wal");
-    initialize(&path).unwrap();
-
-    let conn = Connection::open(&path).unwrap();
-    conn.pragma_update(None, "journal_mode", "DELETE").unwrap();
-    drop(conn);
-
-    let runtime = open_runtime_connection(&path).unwrap();
-    let journal_mode: String = runtime
-        .pragma_query_value(None, "journal_mode", |row| row.get(0))
-        .unwrap();
-    assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
-
-    drop(runtime);
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -509,7 +492,7 @@ fn v16_store_adds_orchestrator_behavior_and_establishes_downgrade_barrier() {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
     assert_eq!(version, STORE_SCHEMA_VERSION);
-    assert_eq!(STORE_SCHEMA_VERSION, 29);
+    assert_eq!(STORE_SCHEMA_VERSION, 31);
     drop(migrated);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }

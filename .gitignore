@@ -1,5 +1,6 @@
 **/target/
 .github/scripts/node_modules/
+crates/nac-core/claude_bridge/node_modules/
 .env
 images/nac
 nac.db

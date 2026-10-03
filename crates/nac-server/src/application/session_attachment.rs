@@ -318,6 +318,25 @@ impl<'a> SessionAttachmentApplication<'a> {
             .find(|entry| entry.summary.session_id == session_id)
             .map(|entry| entry.summary)
             .ok_or_else(|| anyhow!("session '{session_id}' was not found"))?;
+        if summary.agent_runtime == sessions::AgentRuntime::ClaudeAgent {
+            let run_config = if let Some(operation_lease) = operation_lease {
+                runtime::build_claude_resume_config_for_session_with_lease(
+                    self.manager.inner.store_path.clone(),
+                    session_id,
+                    self.manager.inner.root_cwd.clone(),
+                    operation_lease,
+                )
+                .await?
+            } else {
+                runtime::build_claude_resume_config_for_session(
+                    self.manager.inner.store_path.clone(),
+                    session_id,
+                    self.manager.inner.root_cwd.clone(),
+                )
+                .await?
+            };
+            return Ok(SessionService::from_claude_run_config(run_config)?.service);
+        }
         let resource_lease = summary
             .sandboxed
             .then(|| {
@@ -386,6 +405,20 @@ impl<'a> SessionAttachmentApplication<'a> {
             .find(|entry| entry.summary.session_id == session_id)
             .map(|entry| entry.summary)
             .ok_or_else(|| anyhow!("session '{session_id}' was not found"))?;
+        if summary.agent_runtime == sessions::AgentRuntime::ClaudeAgent {
+            let (run_config, cacheable, operation_lease) =
+                runtime::build_claude_resume_config_for_session_attachment(
+                    self.manager.inner.store_path.clone(),
+                    session_id,
+                    self.manager.inner.root_cwd.clone(),
+                )
+                .await?;
+            return Ok((
+                SessionService::from_claude_run_config(run_config)?.service,
+                cacheable,
+                operation_lease,
+            ));
+        }
         // For a sandbox row, shared resource authority must precede snapshot
         // loading and any observer-side Podman inspection/materialization. A
         // concurrent deletion either wins before this acquisition (so the

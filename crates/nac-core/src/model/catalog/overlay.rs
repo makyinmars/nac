@@ -171,6 +171,13 @@ pub(super) fn merge_overlay(
                 continue;
             }
         };
+        if provider == BackendKind::ClaudeAgent {
+            warnings.push(CatalogWarning::OverlayEntrySkipped {
+                provider: provider_id,
+                reason: "Claude Agent is not a catalog provider".to_string(),
+            });
+            continue;
+        }
         let generated: GeneratedProvider = match serde_json::from_value(raw_provider) {
             Ok(generated) => generated,
             Err(error) => {

@@ -7,3 +7,9 @@ it("exposes OpenAI Chat Completions as a keyed first-class provider", () => {
   expect(providerLabel("openai-chat-completions")).toBe("OpenAI Chat Completions");
   expect(providerUsesApiKey("openai-chat-completions")).toBe(true);
 });
+
+it("labels Claude Agent sessions without offering the runtime as a NAC model provider", () => {
+  expect(providerLabel("claude-agent")).toBe("Claude Agent");
+  expect(PROVIDER_KINDS).not.toContain("claude-agent");
+  expect(providerUsesApiKey("claude-agent")).toBe(false);
+});

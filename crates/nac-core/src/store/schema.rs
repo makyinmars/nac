@@ -3,10 +3,12 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+mod claude_processes;
 mod managed_tables;
 mod model_configurations;
 mod wal_preflight;
 
+use claude_processes::{create_claude_processes_table, migrate_claude_dispatch_handoffs};
 pub(super) use managed_tables::create_managed_maintenance_tables;
 use managed_tables::create_terminal_remote_cleanups_table;
 use model_configurations::create_model_configurations_table;
@@ -25,6 +27,8 @@ mod future_schema_tests;
 
 use wal_preflight::read_schema_version_header;
 
+// 31 adds a unique durable worker dispatch handoff key.
+// 30 adds immutable Claude agent identity, trust bindings, and process markers.
 // 29 adds the public-HTTP opt-in to reusable configurations and durable sessions.
 // 28 adds typed run-failure and bounded goal-retry metadata.
 // 27 composes the independently shipped v25 Managed NAC maintenance schema and
@@ -47,7 +51,7 @@ use wal_preflight::read_schema_version_header;
 // early whenever the stored version already equals this one. (12 carries the
 // same schema as 11, which added episodes.status; 10 added the
 // ssh_configurations table; 9 the per-session ssh port and key columns.)
-const STORE_SCHEMA_VERSION: i64 = 29;
+const STORE_SCHEMA_VERSION: i64 = 31;
 const HTTP_OPT_IN_COLUMN: &str = "INTEGER NOT NULL DEFAULT 0 CHECK (allow_insecure_http IN (0, 1))";
 pub const MINIMUM_MIGRATABLE_SCHEMA_VERSION: i64 = 0;
 
@@ -817,7 +821,7 @@ fn open_connection_with_hooks(
             transaction.execute_batch("DROP TABLE IF EXISTS session_overviews")?;
         }
         2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20
-        | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | STORE_SCHEMA_VERSION => {}
+        | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | STORE_SCHEMA_VERSION => {}
         unsupported => {
             return Err(anyhow!(
                 "unsupported store schema version {unsupported}; this build supports versions {MINIMUM_MIGRATABLE_SCHEMA_VERSION} through {STORE_SCHEMA_VERSION}"
@@ -881,6 +885,34 @@ fn open_connection_with_hooks(
         "behavior",
         "TEXT NOT NULL DEFAULT 'orchestrator' CHECK (behavior IN ('orchestrator', 'direct', 'direct-with-orchestrator'))",
     )?;
+    ensure_column(
+        &transaction,
+        "sessions",
+        "agent_runtime",
+        "TEXT NOT NULL DEFAULT 'nac' CHECK (agent_runtime IN ('nac', 'claude-agent'))",
+    )?;
+    ensure_column(&transaction, "sessions", "claude_agent_json", "TEXT")?;
+    ensure_column(&transaction, "sessions", "claude_native_session_id", "TEXT")?;
+    ensure_column(
+        &transaction,
+        "sessions",
+        "claude_worker_trusted_workspace",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (claude_worker_trusted_workspace IN (0, 1))",
+    )?;
+    ensure_column(
+        &transaction,
+        "sessions",
+        "claude_worker_trust_binding_json",
+        "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "threads",
+        "agent",
+        "TEXT NOT NULL DEFAULT 'nac' CHECK (agent IN ('nac', 'claude'))",
+    )?;
+    ensure_column(&transaction, "threads", "claude_native_session_id", "TEXT")?;
+    ensure_column(&transaction, "threads", "claude_binding_json", "TEXT")?;
     // Manual is the fail-closed compatibility default. The option belongs to
     // exactly one session and survives restart without changing config_version
     // or the scope of remembered grants.
@@ -977,6 +1009,8 @@ fn open_connection_with_hooks(
     create_session_forks_table(&transaction)?;
     create_managed_maintenance_tables(&transaction)?;
     create_terminal_remote_cleanups_table(&transaction)?;
+    create_claude_processes_table(&transaction)?;
+    migrate_claude_dispatch_handoffs(&transaction)?;
     ensure_column(
         &transaction,
         "managed_host_maintenance",
